@@ -9,6 +9,7 @@ import {
   QueryCommand,
   UpdateCommand,
   DeleteCommand,
+  ScanCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { z } from 'zod';
 import { config } from '../config.js';
@@ -342,13 +343,69 @@ export async function updateChannelHealth(
       TableName: config.tables.channels,
       Key: { botId, channelKey },
       UpdateExpression:
-        'SET healthStatus = :status, consecutiveFailures = :failures',
+        'SET healthStatus = :status, consecutiveFailures = :failures, lastHealthCheck = :now',
       ExpressionAttributeValues: {
         ':status': status,
         ':failures': failures,
+        ':now': new Date().toISOString(),
       },
     }),
   );
+}
+
+export async function getChannelsNeedingHealthCheck(): Promise<ChannelConfig[]> {
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const results: ChannelConfig[] = [];
+
+  // Query healthCheckIndex GSI for healthy channels not checked in the last hour
+  const healthyResult = await client.send(
+    new QueryCommand({
+      TableName: config.tables.channels,
+      IndexName: 'healthCheckIndex',
+      KeyConditionExpression:
+        'healthStatus = :status AND lastHealthCheck < :cutoff',
+      ExpressionAttributeValues: {
+        ':status': 'healthy',
+        ':cutoff': oneHourAgo,
+      },
+    }),
+  );
+  if (healthyResult.Items) {
+    results.push(...(healthyResult.Items as ChannelConfig[]));
+  }
+
+  // Query unhealthy channels with consecutiveFailures < 3 (still worth retrying)
+  const unhealthyResult = await client.send(
+    new QueryCommand({
+      TableName: config.tables.channels,
+      IndexName: 'healthCheckIndex',
+      KeyConditionExpression:
+        'healthStatus = :status AND lastHealthCheck < :cutoff',
+      FilterExpression: 'consecutiveFailures < :maxFailures',
+      ExpressionAttributeValues: {
+        ':status': 'unhealthy',
+        ':cutoff': oneHourAgo,
+        ':maxFailures': 3,
+      },
+    }),
+  );
+  if (unhealthyResult.Items) {
+    results.push(...(unhealthyResult.Items as ChannelConfig[]));
+  }
+
+  // Also pick up channels that have never been health-checked (lastHealthCheck not set)
+  // These won't appear in the GSI, so we scan with a filter
+  const uncheckedResult = await client.send(
+    new ScanCommand({
+      TableName: config.tables.channels,
+      FilterExpression: 'attribute_not_exists(lastHealthCheck)',
+    }),
+  );
+  if (uncheckedResult.Items) {
+    results.push(...(uncheckedResult.Items as ChannelConfig[]));
+  }
+
+  return results;
 }
 
 // ── Group operations ────────────────────────────────────────────────────────
@@ -430,6 +487,35 @@ export async function listGroups(botId: string): Promise<Group[]> {
     }),
   );
   return (result.Items as Group[]) ?? [];
+}
+
+export async function updateGroup(
+  botId: string,
+  groupJid: string,
+  updates: { name?: string; requiresTrigger?: boolean },
+): Promise<void> {
+  const expressions: string[] = [];
+  const values: Record<string, unknown> = {};
+  if (updates.name !== undefined) {
+    expressions.push('#n = :n');
+    values[':n'] = updates.name;
+  }
+  if (updates.requiresTrigger !== undefined) {
+    expressions.push('requiresTrigger = :rt');
+    values[':rt'] = updates.requiresTrigger;
+  }
+  if (expressions.length === 0) return;
+  await client.send(
+    new UpdateCommand({
+      TableName: config.tables.groups,
+      Key: { botId, groupJid },
+      UpdateExpression: `SET ${expressions.join(', ')}`,
+      ExpressionAttributeValues: values,
+      ...(updates.name !== undefined
+        ? { ExpressionAttributeNames: { '#n': 'name' } }
+        : {}),
+    }),
+  );
 }
 
 export async function updateGroupSession(

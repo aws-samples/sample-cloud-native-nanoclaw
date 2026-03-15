@@ -149,6 +149,37 @@ export const channelsRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
+  // Test channel credentials
+  app.post<{ Params: { botId: string; channelKey: string } }>(
+    '/:channelKey/test',
+    async (request, reply) => {
+      const { botId, channelKey } = request.params;
+
+      // Verify bot ownership
+      const bot = await getBot(request.userId, botId);
+      if (!bot || bot.status === 'deleted') {
+        return reply.status(404).send({ error: 'Bot not found' });
+      }
+
+      const channels = await getChannelsByBot(botId);
+      const decodedKey = decodeURIComponent(channelKey);
+      const channel = channels.find(
+        (ch) => `${ch.channelType}#${ch.channelId}` === decodedKey,
+      );
+      if (!channel) {
+        return reply.status(404).send({ error: 'Channel not found' });
+      }
+
+      try {
+        const creds = await getChannelCredentials(channel.credentialSecretArn);
+        await verifyChannelCredentials(channel.channelType, creds);
+        return { ok: true };
+      } catch {
+        return { ok: false };
+      }
+    },
+  );
+
   // Delete a channel
   app.delete<{ Params: { botId: string; channelType: string } }>(
     '/:channelType',
