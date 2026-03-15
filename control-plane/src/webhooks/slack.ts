@@ -7,7 +7,8 @@ import { config } from '../config.js';
 import { getChannelsByBot, putMessage, getOrCreateGroup } from '../services/dynamo.js';
 import { getCachedBot, getChannelCredentials } from '../services/cached-lookups.js';
 import { verifySlackSignature } from './signature.js';
-import type { Message, SqsInboundPayload } from '@clawbot/shared';
+import type { Attachment, Message, SqsInboundPayload } from '@clawbot/shared';
+import { downloadAndStore } from '../services/attachments.js';
 
 const sqs = new SQSClient({ region: config.region });
 
@@ -26,6 +27,15 @@ interface SlackEventCallback {
   event_time: number;
 }
 
+interface SlackFile {
+  id: string;
+  name: string;
+  mimetype: string;
+  filetype: string;
+  size: number;
+  url_private: string;
+}
+
 interface SlackMessageEvent {
   type: string;
   subtype?: string;
@@ -36,6 +46,7 @@ interface SlackMessageEvent {
   ts: string;
   thread_ts?: string;
   bot_id?: string;
+  files?: SlackFile[];
 }
 
 type SlackPayload = SlackUrlVerification | SlackEventCallback;
@@ -141,8 +152,11 @@ export const slackWebhook: FastifyPluginAsync = async (app) => {
         }
 
         // 5. Parse message
-        const text = event.text;
-        if (!text || !text.trim()) {
+        let content = event.text || '';
+        const slackFiles = event.files || [];
+        const hasFiles = slackFiles.length > 0;
+
+        if (!content.trim() && !hasFiles) {
           return reply.status(200).send({ ok: true });
         }
 
@@ -152,31 +166,60 @@ export const slackWebhook: FastifyPluginAsync = async (app) => {
         const chatName = isGroup
           ? `slack-${eventPayload.team_id}-${slackChannelId}`
           : `dm-${event.user || 'unknown'}`;
+        const messageId = `sl-${event.ts.replace('.', '-')}`;
 
-        // 6. Ensure group exists
+        // 6. Process file attachments
+        const attachments: Attachment[] = [];
+        const bearerToken = creds.botToken;
+
+        for (const sf of slackFiles) {
+          const mime = sf.mimetype || '';
+          // Voice/video: append unsupported note
+          if (mime.startsWith('audio/') || mime.startsWith('video/')) {
+            content += '\n[Voice/Video message — not yet supported]';
+            continue;
+          }
+          // Image or document — download and store (Slack requires Bearer auth)
+          if (mime.startsWith('image/') || mime.startsWith('application/') || mime.startsWith('text/')) {
+            try {
+              const authHeaders = bearerToken
+                ? { Authorization: `Bearer ${bearerToken}` }
+                : undefined;
+              const att = await downloadAndStore(
+                bot.userId, botId, messageId, sf.url_private, sf.name, mime, authHeaders,
+              );
+              if (att) attachments.push(att);
+            } catch (err) {
+              logger.warn({ err, botId }, 'Failed to download Slack file');
+            }
+          }
+        }
+
+        // 7. Ensure group exists
         await getOrCreateGroup(botId, groupJid, chatName, 'slack', isGroup);
 
-        // 7. Store message
+        // 8. Store message
         const timestamp = slackTsToIso(event.ts);
         const msg: Message = {
           botId,
           groupJid,
           timestamp,
-          messageId: `sl-${event.ts.replace('.', '-')}`,
+          messageId,
           sender: event.user || 'unknown',
           senderName: event.user || 'Unknown', // Slack doesn't include display name in events
-          content: text,
+          content,
           isFromMe: false,
           isBotMessage: false,
           channelType: 'slack',
           ttl: Math.floor(Date.now() / 1000) + 90 * 24 * 3600,
+          ...(attachments.length > 0 && { attachments }),
         };
         await putMessage(msg);
 
-        // 8. Check trigger
+        // 9. Check trigger
         if (
           !shouldTrigger(
-            text,
+            content,
             event.channel_type,
             bot.triggerPattern,
             creds.botUserId,
@@ -185,7 +228,7 @@ export const slackWebhook: FastifyPluginAsync = async (app) => {
           return reply.status(200).send({ ok: true });
         }
 
-        // 9. Dispatch to SQS
+        // 10. Dispatch to SQS
         const sqsPayload: SqsInboundPayload = {
           type: 'inbound_message',
           botId,
@@ -194,6 +237,7 @@ export const slackWebhook: FastifyPluginAsync = async (app) => {
           messageId: msg.messageId,
           channelType: 'slack',
           timestamp,
+          ...(attachments.length > 0 && { attachments }),
         };
 
         await sqs.send(

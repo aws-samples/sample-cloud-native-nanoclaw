@@ -7,7 +7,9 @@ import { config } from '../config.js';
 import { getChannelsByBot, putMessage, getOrCreateGroup } from '../services/dynamo.js';
 import { getCachedBot, getChannelCredentials } from '../services/cached-lookups.js';
 import { verifyTelegramSignature } from './signature.js';
-import type { Message, SqsInboundPayload } from '@clawbot/shared';
+import type { Attachment, Message, SqsInboundPayload } from '@clawbot/shared';
+import { getFile } from '../channels/telegram.js';
+import { downloadAndStore } from '../services/attachments.js';
 
 const sqs = new SQSClient({ region: config.region });
 
@@ -27,6 +29,21 @@ interface TelegramChat {
   first_name?: string;
 }
 
+interface TelegramPhotoSize {
+  file_id: string;
+  file_unique_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
+}
+
+interface TelegramDocument {
+  file_id: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+}
+
 interface TelegramMessage {
   message_id: number;
   from?: TelegramUser;
@@ -34,6 +51,11 @@ interface TelegramMessage {
   date: number;
   text?: string;
   caption?: string;
+  photo?: TelegramPhotoSize[];
+  document?: TelegramDocument;
+  voice?: { file_id: string };
+  video?: { file_id: string };
+  video_note?: { file_id: string };
 }
 
 interface TelegramUpdate {
@@ -138,8 +160,16 @@ export const telegramWebhook: FastifyPluginAsync = async (app) => {
           return reply.status(200).send({ ok: true });
         }
 
-        const text = tgMessage.text || tgMessage.caption || '';
-        if (!text.trim()) {
+        let content = tgMessage.text || tgMessage.caption || '';
+        const hasMedia = !!(tgMessage.photo || tgMessage.document || tgMessage.voice || tgMessage.video || tgMessage.video_note);
+
+        // Voice/video: append unsupported note
+        if (tgMessage.voice || tgMessage.video || tgMessage.video_note) {
+          content += '\n[Voice/Video message — not yet supported]';
+        }
+
+        // Skip messages with no text and no media
+        if (!content.trim() && !hasMedia) {
           return reply.status(200).send({ ok: true });
         }
 
@@ -150,34 +180,71 @@ export const telegramWebhook: FastifyPluginAsync = async (app) => {
           tgMessage.chat.type === 'group' ||
           tgMessage.chat.type === 'supergroup';
         const chatName = getChatName(tgMessage.chat);
+        const messageId = `tg-${tgMessage.message_id}`;
 
-        // 5. Ensure group exists in DynamoDB
+        // 5. Process image/document attachments
+        const attachments: Attachment[] = [];
+        const botToken = creds.botToken;
+
+        if (tgMessage.photo && tgMessage.photo.length > 0 && botToken) {
+          // Take last photo (largest resolution)
+          const largest = tgMessage.photo[tgMessage.photo.length - 1];
+          try {
+            const { filePath } = await getFile(botToken, largest.file_id);
+            const fileUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
+            const fileName = filePath.split('/').pop() || 'photo.jpg';
+            const att = await downloadAndStore(
+              bot.userId, botId, messageId, fileUrl, fileName, 'image/jpeg',
+            );
+            if (att) attachments.push(att);
+          } catch (err) {
+            logger.warn({ err, botId }, 'Failed to download Telegram photo');
+          }
+        }
+
+        if (tgMessage.document && botToken) {
+          try {
+            const { filePath } = await getFile(botToken, tgMessage.document.file_id);
+            const fileUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
+            const fileName = tgMessage.document.file_name || filePath.split('/').pop() || 'document';
+            const mimeType = tgMessage.document.mime_type || 'application/octet-stream';
+            const att = await downloadAndStore(
+              bot.userId, botId, messageId, fileUrl, fileName, mimeType,
+            );
+            if (att) attachments.push(att);
+          } catch (err) {
+            logger.warn({ err, botId }, 'Failed to download Telegram document');
+          }
+        }
+
+        // 6. Ensure group exists in DynamoDB
         await getOrCreateGroup(botId, groupJid, chatName, 'telegram', isGroup);
 
-        // 6. Store message in DynamoDB
+        // 7. Store message in DynamoDB
         const timestamp = new Date(tgMessage.date * 1000).toISOString();
         const msg: Message = {
           botId,
           groupJid,
           timestamp,
-          messageId: `tg-${tgMessage.message_id}`,
+          messageId,
           sender: String(tgMessage.from?.id || 'unknown'),
           senderName,
-          content: text,
+          content,
           isFromMe: false,
           isBotMessage: false,
           channelType: 'telegram',
           ttl: Math.floor(Date.now() / 1000) + 90 * 24 * 3600,
+          ...(attachments.length > 0 && { attachments }),
         };
         await putMessage(msg);
 
-        // 7. Check trigger
-        if (!shouldTrigger(text, tgMessage.chat, bot.triggerPattern)) {
+        // 8. Check trigger
+        if (!shouldTrigger(content, tgMessage.chat, bot.triggerPattern)) {
           logger.debug({ botId, groupJid }, 'Message did not match trigger');
           return reply.status(200).send({ ok: true });
         }
 
-        // 8. Send to SQS FIFO for agent dispatch
+        // 9. Send to SQS FIFO for agent dispatch
         const sqsPayload: SqsInboundPayload = {
           type: 'inbound_message',
           botId,
@@ -186,6 +253,7 @@ export const telegramWebhook: FastifyPluginAsync = async (app) => {
           messageId: msg.messageId,
           channelType: 'telegram',
           timestamp,
+          ...(attachments.length > 0 && { attachments }),
         };
 
         await sqs.send(

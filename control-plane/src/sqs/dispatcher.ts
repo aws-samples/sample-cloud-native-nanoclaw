@@ -122,6 +122,9 @@ async function dispatchMessage(
         botGlobal: `${payload.userId}/${payload.botId}/memory/global/CLAUDE.md`,
         group: `${payload.userId}/${payload.botId}/memory/${payload.groupJid}/CLAUDE.md`,
       },
+      ...(payload.attachments && payload.attachments.length > 0 && {
+        attachments: payload.attachments,
+      }),
     };
 
     logger.info(

@@ -68,6 +68,29 @@ export async function getMe(
   return data.result;
 }
 
+export async function getFile(
+  botToken: string,
+  fileId: string,
+): Promise<{ filePath: string }> {
+  const url = `${TELEGRAM_API}/bot${botToken}/getFile`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_id: fileId }),
+  });
+  if (!resp.ok) {
+    throw new Error(`Telegram getFile failed: ${resp.status}`);
+  }
+  const data = (await resp.json()) as {
+    ok: boolean;
+    result: { file_path: string };
+  };
+  if (!data.ok) {
+    throw new Error('Telegram getFile returned ok=false');
+  }
+  return { filePath: data.result.file_path };
+}
+
 export async function deleteWebhook(botToken: string): Promise<void> {
   const url = `${TELEGRAM_API}/bot${botToken}/deleteWebhook`;
   const resp = await fetch(url, {

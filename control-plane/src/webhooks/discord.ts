@@ -7,7 +7,8 @@ import { config } from '../config.js';
 import { getChannelsByBot, putMessage, getOrCreateGroup } from '../services/dynamo.js';
 import { getCachedBot, getChannelCredentials } from '../services/cached-lookups.js';
 import { verifyDiscordSignature } from './signature.js';
-import type { Message, SqsInboundPayload } from '@clawbot/shared';
+import type { Attachment, Message, SqsInboundPayload } from '@clawbot/shared';
+import { downloadAndStore } from '../services/attachments.js';
 
 const sqs = new SQSClient({ region: config.region });
 
@@ -33,6 +34,15 @@ interface DiscordUser {
   global_name?: string;
 }
 
+interface DiscordAttachment {
+  id: string;
+  filename: string;
+  content_type?: string;
+  size: number;
+  url: string;
+  proxy_url: string;
+}
+
 interface DiscordMessageEvent {
   id: string;
   channel_id: string;
@@ -41,6 +51,7 @@ interface DiscordMessageEvent {
   content: string;
   timestamp: string;
   mentions?: DiscordUser[];
+  attachments?: DiscordAttachment[];
 }
 
 function getDiscordDisplayName(user: DiscordUser): string {
@@ -150,8 +161,11 @@ export const discordWebhook: FastifyPluginAsync = async (app) => {
           return reply.status(200).send({ ok: true });
         }
 
-        const text = messageEvent.content;
-        if (!text.trim()) {
+        let content = messageEvent.content;
+        const discordAttachments = messageEvent.attachments || [];
+        const hasAttachments = discordAttachments.length > 0;
+
+        if (!content.trim() && !hasAttachments) {
           return reply.status(200).send({ ok: true });
         }
 
@@ -161,31 +175,55 @@ export const discordWebhook: FastifyPluginAsync = async (app) => {
         const chatName = isGroup
           ? `discord-${messageEvent.guild_id}-${channelId}`
           : `dm-${messageEvent.author.username}`;
+        const messageId = `dc-${messageEvent.id}`;
 
-        // 5. Ensure group exists
+        // 5. Process attachments
+        const attachments: Attachment[] = [];
+        for (const da of discordAttachments) {
+          const ct = da.content_type || '';
+          // Voice/video: append unsupported note
+          if (ct.startsWith('audio/') || ct.startsWith('video/')) {
+            content += '\n[Voice/Video message — not yet supported]';
+            continue;
+          }
+          // Image or document — download and store
+          if (ct.startsWith('image/') || ct.startsWith('application/') || ct.startsWith('text/')) {
+            try {
+              const att = await downloadAndStore(
+                bot.userId, botId, messageId, da.url, da.filename, ct,
+              );
+              if (att) attachments.push(att);
+            } catch (err) {
+              logger.warn({ err, botId }, 'Failed to download Discord attachment');
+            }
+          }
+        }
+
+        // 6. Ensure group exists
         await getOrCreateGroup(botId, groupJid, chatName, 'discord', isGroup);
 
-        // 6. Store message
+        // 7. Store message
         const timestamp = messageEvent.timestamp || new Date().toISOString();
         const msg: Message = {
           botId,
           groupJid,
           timestamp,
-          messageId: `dc-${messageEvent.id}`,
+          messageId,
           sender: messageEvent.author.id,
           senderName: getDiscordDisplayName(messageEvent.author),
-          content: text,
+          content,
           isFromMe: false,
           isBotMessage: false,
           channelType: 'discord',
           ttl: Math.floor(Date.now() / 1000) + 90 * 24 * 3600,
+          ...(attachments.length > 0 && { attachments }),
         };
         await putMessage(msg);
 
-        // 7. Check trigger
+        // 8. Check trigger
         if (
           !shouldTrigger(
-            text,
+            content,
             messageEvent.mentions,
             messageEvent.guild_id,
             bot.triggerPattern,
@@ -195,7 +233,7 @@ export const discordWebhook: FastifyPluginAsync = async (app) => {
           return reply.status(200).send({ ok: true });
         }
 
-        // 8. Dispatch to SQS
+        // 9. Dispatch to SQS
         const sqsPayload: SqsInboundPayload = {
           type: 'inbound_message',
           botId,
@@ -204,6 +242,7 @@ export const discordWebhook: FastifyPluginAsync = async (app) => {
           messageId: msg.messageId,
           channelType: 'discord',
           timestamp,
+          ...(attachments.length > 0 && { attachments }),
         };
 
         await sqs.send(
