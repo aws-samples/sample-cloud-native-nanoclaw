@@ -35,9 +35,9 @@ FROM --platform=linux/arm64 node:22-slim AS runner
 
 WORKDIR /app
 
-# Copy built artifacts
+# Copy built artifacts and hoisted node_modules
 COPY --from=builder /app/control-plane/dist/ ./dist/
-COPY --from=builder /app/control-plane/node_modules/ ./node_modules/
+COPY --from=builder /app/node_modules/ ./node_modules/
 COPY --from=builder /app/shared/dist/ ./node_modules/@clawbot/shared/dist/
 COPY --from=builder /app/shared/package.json ./node_modules/@clawbot/shared/
 COPY --from=builder /app/control-plane/package.json ./
