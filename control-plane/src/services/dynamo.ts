@@ -285,6 +285,19 @@ export async function updateChannelHealth(
 
 // ── Group operations ────────────────────────────────────────────────────────
 
+export async function getGroup(
+  botId: string,
+  groupJid: string,
+): Promise<Group | null> {
+  const result = await client.send(
+    new GetCommand({
+      TableName: config.tables.groups,
+      Key: { botId, groupJid },
+    }),
+  );
+  return (result.Item as Group) ?? null;
+}
+
 export async function getOrCreateGroup(
   botId: string,
   groupJid: string,

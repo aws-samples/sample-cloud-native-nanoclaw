@@ -5,6 +5,7 @@
 import type { Message as SQSMessage } from '@aws-sdk/client-sqs';
 import { formatMessages, formatOutbound } from '@clawbot/shared';
 import type {
+  ChannelType,
   InvocationPayload,
   InvocationResult,
   SqsInboundPayload,
@@ -14,6 +15,7 @@ import type {
 } from '@clawbot/shared';
 import { config } from '../config.js';
 import {
+  getGroup,
   getRecentMessages,
   putMessage,
   putSession,
@@ -81,6 +83,7 @@ async function dispatchMessage(
     botName: bot.name,
     groupJid: payload.groupJid,
     userId: payload.userId,
+    channelType: payload.channelType,
     prompt,
     systemPrompt: bot.systemPrompt,
     sessionPath: `${payload.userId}/${payload.botId}/sessions/${payload.groupJid}/`,
@@ -176,8 +179,12 @@ async function dispatchTask(
   const task = await getTask(payload.botId, payload.taskId);
   if (!task || task.status !== 'active') return;
 
+  // Look up group record to resolve channelType
+  const group = await getGroup(payload.botId, payload.groupJid);
+  const channelType: ChannelType = group?.channelType ?? 'telegram';
+
   logger.info(
-    { botId: payload.botId, taskId: payload.taskId },
+    { botId: payload.botId, taskId: payload.taskId, channelType },
     'Dispatching scheduled task',
   );
 
@@ -186,6 +193,7 @@ async function dispatchTask(
     botName: bot.name,
     groupJid: payload.groupJid,
     userId: payload.userId,
+    channelType,
     prompt: task.prompt,
     systemPrompt: bot.systemPrompt,
     isScheduledTask: true,
@@ -212,34 +220,39 @@ async function dispatchTask(
         content: replyText,
         isFromMe: true,
         isBotMessage: true,
-        channelType: 'telegram', // TODO: resolve from group
+        channelType,
         ttl: Math.floor(Date.now() / 1000) + 90 * 24 * 3600,
       });
 
-      // TODO: resolve channel type from group config
-      // For now, skip channel reply for tasks until we wire up group -> channel mapping
+      // Send reply via channel API
+      await sendChannelReply(
+        payload.botId,
+        payload.groupJid,
+        channelType,
+        replyText,
+        logger,
+      );
     }
   }
 }
 
-// ── Agent Invocation (AgentCore placeholder) ────────────────────────────────
+// ── Agent Invocation (AgentCore Runtime) ─────────────────────────────────────
 
-async function invokeAgent(
+const AGENT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes — agent turns can be long
+
+export async function invokeAgent(
   payload: InvocationPayload,
   logger: Logger,
 ): Promise<InvocationResult> {
-  // TODO: Replace with real AgentCore Runtime invocation
-  // This will call the AgentCore Runtime API with the invocation payload.
-  // The runtime manages Claude sessions, filesystem isolation, and tool execution.
-  //
-  // Expected flow:
-  // 1. POST to AgentCore Runtime ARN (config.agentcore.runtimeArn)
-  //    with InvocationPayload
-  // 2. Runtime loads session from S3 (or creates new)
-  // 3. Runtime invokes Claude with system prompt + message context
-  // 4. Runtime returns InvocationResult with response text and session ID
-  //
-  // For now, return a placeholder that logs the invocation.
+  const runtimeUrl = config.agentcore.runtimeArn;
+  if (!runtimeUrl) {
+    logger.error('AgentCore runtime URL is not configured (AGENTCORE_RUNTIME_ARN)');
+    return {
+      status: 'error',
+      result: null,
+      error: 'AgentCore runtime URL is not configured',
+    };
+  }
 
   logger.info(
     {
@@ -248,14 +261,46 @@ async function invokeAgent(
       promptLength: payload.prompt.length,
       isScheduledTask: payload.isScheduledTask,
     },
-    'Agent invocation placeholder — AgentCore integration pending',
+    'Invoking AgentCore runtime',
   );
 
-  return {
-    status: 'error',
-    result: null,
-    error: 'AgentCore runtime not yet integrated',
-  };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AGENT_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(runtimeUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => 'no body');
+      logger.error(
+        { status: response.status, errorBody },
+        'AgentCore runtime returned non-OK status',
+      );
+      return {
+        status: 'error',
+        result: null,
+        error: `AgentCore returned HTTP ${response.status}: ${errorBody}`,
+      };
+    }
+
+    const body = (await response.json()) as { output: InvocationResult };
+    return body.output;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error({ err }, 'AgentCore runtime invocation failed');
+    return {
+      status: 'error',
+      result: null,
+      error: `AgentCore invocation failed: ${message}`,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 // ── Channel reply routing ───────────────────────────────────────────────────

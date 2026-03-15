@@ -168,6 +168,7 @@ export interface InvocationPayload {
   botName: string;
   groupJid: string;
   userId: string;
+  channelType: ChannelType;
   prompt: string;
   systemPrompt?: string;
   sessionPath: string; // S3 path: {userId}/{botId}/sessions/{groupJid}/

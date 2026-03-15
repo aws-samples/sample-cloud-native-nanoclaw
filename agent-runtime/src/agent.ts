@@ -204,9 +204,7 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
               CLAWBOT_BOT_NAME: params.botName,
               CLAWBOT_GROUP_JID: params.groupJid,
               CLAWBOT_USER_ID: params.userId,
-              CLAWBOT_CHANNEL_TYPE: payload.attachments?.[0]
-                ? 'telegram' // default; real channel type would come from payload
-                : 'telegram',
+              CLAWBOT_CHANNEL_TYPE: payload.channelType,
               // Scoped credentials are inherited from process.env
               // (the runtime's IAM role can assume the scoped role)
               SCOPED_ROLE_ARN: process.env.SCOPED_ROLE_ARN || '',
