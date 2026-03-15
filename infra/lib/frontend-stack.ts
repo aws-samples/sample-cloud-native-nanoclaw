@@ -3,12 +3,14 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import type { Construct } from 'constructs';
 
 export interface FrontendStackProps extends cdk.StackProps {
   stage: string;
   userPool: cognito.IUserPool;
   userPoolClient: cognito.IUserPoolClient;
+  alb: elbv2.IApplicationLoadBalancer;
 }
 
 export class FrontendStack extends cdk.Stack {
@@ -34,6 +36,19 @@ export class FrontendStack extends cdk.Stack {
       signing: cloudfront.Signing.SIGV4_NO_OVERRIDE,
     });
 
+    // ── ALB Origin (API + Webhooks) ──────────────────────────────────────
+    const albOrigin = new origins.HttpOrigin(props.alb.loadBalancerDnsName, {
+      protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+    });
+
+    // Origin request policy: forward all headers/query strings to ALB
+    const apiOriginRequestPolicy = new cloudfront.OriginRequestPolicy(this, 'ApiOriginRequestPolicy', {
+      originRequestPolicyName: `clawbot-${stage}-api-forward-all`,
+      headerBehavior: cloudfront.OriginRequestHeaderBehavior.all(),
+      queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.all(),
+      cookieBehavior: cloudfront.OriginRequestCookieBehavior.none(),
+    });
+
     // ── CloudFront Distribution ─────────────────────────────────────────
     this.distribution = new cloudfront.Distribution(this, 'Distribution', {
       defaultRootObject: 'index.html',
@@ -43,6 +58,28 @@ export class FrontendStack extends cdk.Stack {
         }),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+      },
+      additionalBehaviors: {
+        '/api/*': {
+          origin: albOrigin,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+          originRequestPolicy: apiOriginRequestPolicy,
+        },
+        '/webhook/*': {
+          origin: albOrigin,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.ALLOW_ALL,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+          originRequestPolicy: apiOriginRequestPolicy,
+        },
+        '/health': {
+          origin: albOrigin,
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+          cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+        },
       },
       errorResponses: [
         {

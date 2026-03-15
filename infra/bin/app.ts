@@ -78,8 +78,10 @@ const frontend = new FrontendStack(app, `ClawBot-${stage}-Frontend`, {
   stage,
   userPool: auth.userPool,
   userPoolClient: auth.userPoolClient,
+  alb: controlPlane.alb,
 });
 frontend.addDependency(auth);
+frontend.addDependency(controlPlane);
 
 const monitoring = new MonitoringStack(app, `ClawBot-${stage}-Monitoring`, {
   env,
