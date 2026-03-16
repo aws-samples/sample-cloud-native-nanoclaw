@@ -21,6 +21,7 @@
 13. [成本模型](#13-成本模型)
 14. [NanoClaw → ClawBot Cloud 映射](#14-nanoclaw--clawbot-cloud-映射)
 15. [CDK 部署架构](./architecture/15-cdk-deployment.md) — 6 个 Stack、DynamoDB/Cognito/ECS/ALB/CloudFront 定义、部署流程
+16. [System Prompt Builder](./architecture/16-system-prompt-builder.md) — 模块化 Section、Context 文件层级、Token 预算管理
 
 ---
 
