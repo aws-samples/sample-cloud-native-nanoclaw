@@ -138,6 +138,21 @@ async function _handleInvocation(
   });
 
   // 9. Sync session and memory back to S3
+  // Debug: collect file listing to return in response
+  const { readdirSync, existsSync } = await import('fs');
+  const debugFiles: Record<string, string[]> = {};
+  for (const dir of ['/home/node/.claude', '/workspace/group', '/workspace/global', '/workspace/shared']) {
+    if (existsSync(dir)) {
+      try {
+        debugFiles[dir] = readdirSync(dir, { recursive: true, withFileTypes: true })
+          .filter((e: { isFile: () => boolean }) => e.isFile())
+          .map((e: { parentPath?: string; path?: string; name: string }) => `${(e.parentPath || e.path)}/${e.name}`);
+      } catch { debugFiles[dir] = ['(read error)']; }
+    } else {
+      debugFiles[dir] = ['(not exist)'];
+    }
+  }
+
   logger.info('Syncing session back to S3');
   await syncToS3(s3, SESSION_BUCKET, syncPaths, logger);
 
@@ -145,6 +160,9 @@ async function _handleInvocation(
     { status: result.status, sessionId: result.newSessionId },
     'Invocation complete',
   );
+
+  // Attach debug info to result temporarily
+  (result as unknown as Record<string, unknown>)._debugFiles = debugFiles;
 
   return result;
 }
@@ -256,37 +274,79 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
       },
     })) {
       messageCount++;
-      const msgType =
-        message.type === 'system'
-          ? `system/${(message as { subtype?: string }).subtype}`
-          : message.type;
-      logger.debug({ messageCount, msgType }, 'SDK message');
 
-      // Track session initialization
-      if (message.type === 'system' && message.subtype === 'init') {
-        newSessionId = message.session_id;
-        logger.info({ sessionId: newSessionId }, 'Session initialized');
-      }
-
-      // Track token usage from assistant messages
-      if (message.type === 'assistant') {
-        const usage = (message as { message?: { usage?: { input_tokens?: number; output_tokens?: number } } }).message?.usage;
-        if (usage) {
-          tokensUsed += (usage.input_tokens || 0) + (usage.output_tokens || 0);
+      switch (message.type) {
+        case 'system': {
+          const subtype = (message as { subtype?: string }).subtype;
+          if (subtype === 'init') {
+            newSessionId = message.session_id;
+            logger.info({ sessionId: newSessionId }, 'Session initialized');
+          } else {
+            logger.info({ subtype }, 'System message');
+          }
+          break;
         }
-      }
 
-      // Track result messages
-      if (message.type === 'result') {
-        resultCount++;
-        const textResult = 'result' in message ? (message as { result?: string }).result : null;
-        if (textResult) {
-          lastResult = textResult;
+        case 'assistant': {
+          const msg = (message as { message?: { content?: unknown[]; model?: string; usage?: { input_tokens?: number; output_tokens?: number } } }).message;
+          const usage = msg?.usage;
+          if (usage) {
+            tokensUsed += (usage.input_tokens || 0) + (usage.output_tokens || 0);
+          }
+          // Extract tool_use blocks from assistant content
+          const content = msg?.content as Array<{ type: string; name?: string; id?: string; text?: string }> | undefined;
+          const toolUses = content?.filter((b) => b.type === 'tool_use').map((b) => b.name) || [];
+          const textBlocks = content?.filter((b) => b.type === 'text').map((b) => (b.text || '').slice(0, 200)) || [];
+          logger.info(
+            {
+              model: msg?.model,
+              inputTokens: usage?.input_tokens,
+              outputTokens: usage?.output_tokens,
+              toolUses: toolUses.length > 0 ? toolUses : undefined,
+              textPreview: textBlocks.length > 0 ? textBlocks[0].slice(0, 150) : undefined,
+            },
+            'Assistant response',
+          );
+          break;
         }
-        logger.info(
-          { resultCount, resultLength: textResult?.length, tokensUsed },
-          'Agent result received',
-        );
+
+        case 'user': {
+          const userMsg = message as { parent_tool_use_id?: string | null; isSynthetic?: boolean };
+          if (userMsg.parent_tool_use_id) {
+            logger.info({ toolUseId: userMsg.parent_tool_use_id }, 'Tool result');
+          }
+          break;
+        }
+
+        case 'tool_use_summary': {
+          const summary = (message as { summary?: string }).summary || '';
+          logger.info({ summary: summary.slice(0, 300) }, 'Tool use summary');
+          break;
+        }
+
+        case 'result': {
+          resultCount++;
+          const rm = message as { subtype?: string; result?: string; duration_ms?: number; num_turns?: number; total_cost_usd?: number; usage?: { input_tokens?: number; output_tokens?: number }; stop_reason?: string | null };
+          lastResult = rm.result || null;
+          logger.info(
+            {
+              subtype: rm.subtype,
+              resultLength: rm.result?.length,
+              durationMs: rm.duration_ms,
+              numTurns: rm.num_turns,
+              costUsd: rm.total_cost_usd,
+              inputTokens: rm.usage?.input_tokens,
+              outputTokens: rm.usage?.output_tokens,
+              stopReason: rm.stop_reason,
+              resultPreview: rm.result?.slice(0, 200),
+            },
+            'Agent result',
+          );
+          break;
+        }
+
+        default:
+          logger.debug({ type: message.type, messageCount }, 'SDK message');
       }
     }
   } catch (err) {

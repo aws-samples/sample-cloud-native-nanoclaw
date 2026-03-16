@@ -1,6 +1,17 @@
 // ClawBot Cloud — Control Plane Configuration
 // Environment variable names match CDK ControlPlaneStack container environment
 
+import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+
+// Values resolved at startup from SSM Parameter Store.
+// SSM parameter names are set via CDK env vars (*_SSM); the actual values are
+// written by FrontendStack (webhook URL) and post-deploy.sh (AgentCore ARN).
+let webhookBaseUrl = process.env.WEBHOOK_BASE_URL || '';
+const webhookBaseUrlSsm = process.env.WEBHOOK_BASE_URL_SSM || '';
+
+let agentcoreRuntimeArn = process.env.AGENTCORE_RUNTIME_ARN || '';
+const agentcoreRuntimeArnSsm = process.env.AGENTCORE_RUNTIME_ARN_SSM || '';
+
 export const config = {
   port: Number(process.env.PORT) || 3000,
   region: process.env.AWS_REGION || 'us-east-1',
@@ -36,9 +47,11 @@ export const config = {
   // CORS
   corsOrigin: process.env.CORS_ORIGIN || '*',
 
-  // AgentCore
+  // AgentCore — getter so resolveConfig() writes take effect
   agentcore: {
-    runtimeArn: process.env.AGENTCORE_RUNTIME_ARN || '',
+    get runtimeArn() {
+      return agentcoreRuntimeArn;
+    },
   },
 
   // EventBridge Scheduler
@@ -47,8 +60,10 @@ export const config = {
     messageQueueArn: process.env.MESSAGE_QUEUE_ARN || '',
   },
 
-  // Webhook base URL for channel webhook registration
-  webhookBaseUrl: process.env.WEBHOOK_BASE_URL || '',
+  // Webhook base URL — getter so resolveConfig() writes take effect
+  get webhookBaseUrl() {
+    return webhookBaseUrl;
+  },
 
   // Concurrency
   maxConcurrentDispatches: Number(process.env.MAX_CONCURRENT_DISPATCHES) || 20,
@@ -56,3 +71,37 @@ export const config = {
   // Cache TTL
   cacheTtlMs: Number(process.env.CACHE_TTL_MS) || 5 * 60 * 1000, // 5 minutes
 } as const;
+
+/**
+ * Resolve config values that require async calls (SSM Parameter Store).
+ * Must be called once at startup before serving requests.
+ */
+export async function resolveConfig(): Promise<void> {
+  const ssm = new SSMClient({ region: config.region });
+
+  const resolve = async (
+    current: string,
+    ssmName: string,
+    label: string,
+  ): Promise<string> => {
+    if (current || !ssmName) return current;
+    try {
+      const res = await ssm.send(new GetParameterCommand({ Name: ssmName }));
+      if (res.Parameter?.Value) return res.Parameter.Value;
+    } catch (err) {
+      console.warn(`Failed to read ${label} from SSM (${ssmName}):`, err);
+    }
+    return current;
+  };
+
+  webhookBaseUrl = await resolve(
+    webhookBaseUrl,
+    webhookBaseUrlSsm,
+    'webhook base URL',
+  );
+  agentcoreRuntimeArn = await resolve(
+    agentcoreRuntimeArn,
+    agentcoreRuntimeArnSsm,
+    'AgentCore runtime ARN',
+  );
+}

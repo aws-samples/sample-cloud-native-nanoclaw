@@ -21,7 +21,9 @@ import type {
   ScheduledTask,
   Session,
   User,
+  UserQuota,
 } from '@clawbot/shared';
+import { DEFAULT_QUOTA } from '@clawbot/shared';
 
 const rawClient = new DynamoDBClient({ region: config.region });
 const client = DynamoDBDocumentClient.from(rawClient, {
@@ -55,6 +57,29 @@ export async function putUser(user: User): Promise<void> {
       Item: user,
     }),
   );
+}
+
+/** Get user, auto-provisioning with default quota if record is missing or incomplete. */
+export async function ensureUser(userId: string, email?: string): Promise<User> {
+  const existing = await getUser(userId);
+  if (existing?.quota) return existing;
+
+  const now = new Date().toISOString();
+  const user: User = {
+    userId,
+    email: email || existing?.email || '',
+    displayName: existing?.displayName || '',
+    plan: existing?.plan || 'free',
+    quota: existing?.quota || DEFAULT_QUOTA,
+    usageMonth: existing?.usageMonth || now.slice(0, 7),
+    usageTokens: existing?.usageTokens || 0,
+    usageInvocations: existing?.usageInvocations || 0,
+    activeAgents: existing?.activeAgents || 0,
+    createdAt: existing?.createdAt || now,
+    lastLogin: now,
+  };
+  await putUser(user);
+  return user;
 }
 
 export async function updateUserUsage(
@@ -162,6 +187,76 @@ export async function releaseAgentSlot(userId: string): Promise<void> {
     }
     throw err;
   }
+}
+
+export async function listAllUsers(): Promise<User[]> {
+  const items: User[] = [];
+  let lastKey: Record<string, unknown> | undefined;
+  do {
+    const result = await client.send(
+      new ScanCommand({
+        TableName: config.tables.users,
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+    if (result.Items) items.push(...(result.Items as User[]));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+  return items;
+}
+
+export async function updateUserQuota(
+  userId: string,
+  quota: Partial<UserQuota>,
+): Promise<void> {
+  userIdSchema.parse(userId);
+  const expressions: string[] = [];
+  const names: Record<string, string> = {};
+  const values: Record<string, unknown> = {};
+
+  const fields = [
+    'maxBots',
+    'maxGroupsPerBot',
+    'maxTasksPerBot',
+    'maxConcurrentAgents',
+    'maxMonthlyTokens',
+  ] as const;
+
+  for (const field of fields) {
+    if (quota[field] !== undefined) {
+      expressions.push(`quota.#${field} = :${field}`);
+      names[`#${field}`] = field;
+      values[`:${field}`] = quota[field];
+    }
+  }
+
+  if (expressions.length === 0) return;
+
+  await client.send(
+    new UpdateCommand({
+      TableName: config.tables.users,
+      Key: { userId },
+      UpdateExpression: `SET ${expressions.join(', ')}`,
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
+    }),
+  );
+}
+
+export async function updateUserPlan(
+  userId: string,
+  plan: 'free' | 'pro' | 'enterprise',
+): Promise<void> {
+  userIdSchema.parse(userId);
+  await client.send(
+    new UpdateCommand({
+      TableName: config.tables.users,
+      Key: { userId },
+      UpdateExpression: 'SET #plan = :plan',
+      ExpressionAttributeNames: { '#plan': 'plan' },
+      ExpressionAttributeValues: { ':plan': plan },
+    }),
+  );
 }
 
 // ── Bot operations ──────────────────────────────────────────────────────────

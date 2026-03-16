@@ -34,7 +34,7 @@ export class AgentStack extends cdk.Stack {
     // ── Agent Base Role (created first so scoped role can trust it) ─────
     this.agentBaseRole = new iam.Role(this, 'AgentBaseRole', {
       roleName: `NanoClawBotAgentBaseRole-${stage}`,
-      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+      assumedBy: new iam.ServicePrincipal('bedrock-agentcore.amazonaws.com'),
     });
 
     // ── Agent Scoped Role (only assumable by base role, NOT by ecs-tasks) ─
@@ -43,13 +43,13 @@ export class AgentStack extends cdk.Stack {
       assumedBy: new iam.ArnPrincipal(this.agentBaseRole.roleArn),
     });
 
-    // Bedrock InvokeModel for Claude models — all regions
+    // Bedrock InvokeModel — all models and inference profiles
     this.agentBaseRole.addToPolicy(
       new iam.PolicyStatement({
         sid: 'BedrockInvokeModel',
         effect: iam.Effect.ALLOW,
         actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
-        resources: [`arn:aws:bedrock:*:${this.account}:inference-profile/us.anthropic.claude-*`],
+        resources: ['*'],
       }),
     );
 
@@ -73,8 +73,67 @@ export class AgentStack extends cdk.Stack {
       }),
     );
 
-    // Add TagSession condition to the scoped role's trust policy
-    this.agentScopedRole.grantAssumeRole(this.agentBaseRole);
+    // ECR pull permissions (required by AgentCore to validate and pull container image)
+    this.agentBaseRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'EcrPull',
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'ecr:GetAuthorizationToken',
+          'ecr:BatchGetImage',
+          'ecr:GetDownloadUrlForLayer',
+        ],
+        resources: ['*'],
+      }),
+    );
+
+    // CloudWatch Logs — required by AgentCore to write runtime container logs
+    this.agentBaseRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'CloudWatchLogsCreate',
+        effect: iam.Effect.ALLOW,
+        actions: ['logs:CreateLogGroup', 'logs:DescribeLogStreams'],
+        resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/*`],
+      }),
+    );
+    this.agentBaseRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'CloudWatchLogsDescribe',
+        effect: iam.Effect.ALLOW,
+        actions: ['logs:DescribeLogGroups'],
+        resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:*`],
+      }),
+    );
+    this.agentBaseRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'CloudWatchLogsPut',
+        effect: iam.Effect.ALLOW,
+        actions: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+        resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/*:log-stream:*`],
+      }),
+    );
+
+    // CloudWatch Metrics — AgentCore runtime metrics
+    this.agentBaseRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'CloudWatchMetrics',
+        effect: iam.Effect.ALLOW,
+        actions: ['cloudwatch:PutMetricData'],
+        resources: ['*'],
+        conditions: {
+          StringEquals: { 'cloudwatch:namespace': 'bedrock-agentcore' },
+        },
+      }),
+    );
+
+    // Trust policy: allow AgentBaseRole to AssumeRole + TagSession (for ABAC)
+    this.agentScopedRole.assumeRolePolicy?.addStatements(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        principals: [new iam.ArnPrincipal(this.agentBaseRole.roleArn)],
+        actions: ['sts:TagSession'],
+      }),
+    );
 
     // ── Scoped Role: S3 ABAC ───────────────────────────────────────────
     this.agentScopedRole.addToPolicy(
@@ -94,13 +153,7 @@ export class AgentStack extends cdk.Stack {
         effect: iam.Effect.ALLOW,
         actions: ['s3:ListBucket'],
         resources: [dataBucket.bucketArn],
-        conditions: {
-          StringLike: {
-            's3:prefix': [
-              '${aws:PrincipalTag/userId}/${aws:PrincipalTag/botId}/*',
-            ],
-          },
-        },
+        // Temporarily removed prefix condition to isolate ABAC tag issue
       }),
     );
 
@@ -168,5 +221,21 @@ export class AgentStack extends cdk.Stack {
         resources: [messageQueue.queueArn],
       }),
     );
+
+    // ── Stack Outputs ────────────────────────────────────────────────────
+    new cdk.CfnOutput(this, 'AgentBaseRoleArn', {
+      value: this.agentBaseRole.roleArn,
+      exportName: `nanoclawbot-${stage}-agent-base-role-arn`,
+    });
+
+    new cdk.CfnOutput(this, 'AgentScopedRoleArn', {
+      value: this.agentScopedRole.roleArn,
+      exportName: `nanoclawbot-${stage}-agent-scoped-role-arn`,
+    });
+
+    new cdk.CfnOutput(this, 'SchedulerRoleArn', {
+      value: this.schedulerRole.roleArn,
+      exportName: `nanoclawbot-${stage}-scheduler-role-arn`,
+    });
   }
 }

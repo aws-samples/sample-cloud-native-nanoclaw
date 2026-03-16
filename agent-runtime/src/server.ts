@@ -16,7 +16,7 @@ import type { InvocationPayload, InvocationResult } from '@clawbot/shared';
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 const port = Number(process.env.PORT) || 8080;
 
-const app = Fastify({ logger });
+const app = Fastify({ loggerInstance: logger });
 
 // Busy state tracking — reflects whether the agent is currently processing
 let busy = false;
@@ -38,10 +38,12 @@ app.post<{ Body: InvocationPayload }>('/invocations', async (request, reply) => 
     return reply.send(result);
   } catch (error) {
     logger.error(error, 'Invocation failed');
+    // Include env diagnostics in error response for ABAC debugging
+    const envDebug = `SCOPED_ROLE_ARN=${process.env.SCOPED_ROLE_ARN || '(empty)'}, SESSION_BUCKET=${process.env.SESSION_BUCKET || '(empty)'}, AWS_REGION=${process.env.AWS_REGION || '(empty)'}`;
     const result: InvocationResult = {
       status: 'error',
       result: null,
-      error: error instanceof Error ? error.message : 'Unknown error',
+      error: `${error instanceof Error ? error.message : 'Unknown error'} [ENV: ${envDebug}] [userId=${payload.userId}, botId=${payload.botId}]`,
     };
     // 200 even on agent error — AgentCore contract treats HTTP errors as infra failures
     return reply.status(200).send(result);

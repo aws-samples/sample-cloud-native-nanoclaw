@@ -2,12 +2,11 @@
 // Returns authenticated user profile and usage information
 
 import type { FastifyPluginAsync } from 'fastify';
-import { getUser } from '../../services/dynamo.js';
+import { ensureUser } from '../../services/dynamo.js';
 
 export const userRoutes: FastifyPluginAsync = async (app) => {
   app.get('/me', async (request) => {
-    const user = await getUser(request.userId);
-    if (!user) return { userId: request.userId, email: request.userEmail };
+    const user = await ensureUser(request.userId, request.userEmail);
     return {
       userId: user.userId,
       email: user.email,
@@ -18,6 +17,7 @@ export const userRoutes: FastifyPluginAsync = async (app) => {
         tokens: user.usageTokens,
         invocations: user.usageInvocations,
       },
+      isAdmin: request.isAdmin,
     };
   });
 };

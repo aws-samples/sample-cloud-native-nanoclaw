@@ -128,7 +128,44 @@ export const tasks = {
 
 // User API
 export const user = {
-  me: () => request<{ userId: string; email: string; plan?: string; quota?: any; usage?: { month: string; tokens: number; invocations: number } }>('/me'),
+  me: () => request<{ userId: string; email: string; plan?: string; quota?: any; usage?: { month: string; tokens: number; invocations: number }; isAdmin?: boolean }>('/me'),
+};
+
+// Admin API types
+export interface AdminUser {
+  userId: string;
+  email: string;
+  displayName: string;
+  plan: string;
+  quota: {
+    maxBots: number;
+    maxGroupsPerBot: number;
+    maxTasksPerBot: number;
+    maxConcurrentAgents: number;
+    maxMonthlyTokens: number;
+  };
+  usageMonth: string;
+  usageTokens: number;
+  usageInvocations: number;
+  activeAgents: number;
+  createdAt: string;
+  lastLogin: string;
+}
+
+export interface UpdateQuotaRequest {
+  maxBots?: number;
+  maxGroupsPerBot?: number;
+  maxTasksPerBot?: number;
+  maxConcurrentAgents?: number;
+  maxMonthlyTokens?: number;
+}
+
+// Admin API
+export const admin = {
+  listUsers: () => request<AdminUser[]>('/admin'),
+  getUser: (userId: string) => request<AdminUser>(`/admin/${userId}`),
+  updateQuota: (userId: string, quota: UpdateQuotaRequest) => request<{ ok: boolean }>(`/admin/${userId}/quota`, { method: 'PUT', body: JSON.stringify(quota) }),
+  updatePlan: (userId: string, plan: string) => request<{ ok: boolean }>(`/admin/${userId}/plan`, { method: 'PUT', body: JSON.stringify({ plan }) }),
 };
 
 // Memory API (CLAUDE.md files)

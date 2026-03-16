@@ -13,7 +13,7 @@ export interface FoundationStackProps extends cdk.StackProps {
 export class FoundationStack extends cdk.Stack {
   public readonly vpc: ec2.Vpc;
   public readonly dataBucket: s3.Bucket;
-  public readonly ecrRepo: ecr.Repository;
+  public readonly ecrRepo: ecr.IRepository;
   public readonly messageQueue: sqs.Queue;
   public readonly replyQueue: sqs.Queue;
   public readonly dlq: sqs.Queue;
@@ -68,12 +68,10 @@ export class FoundationStack extends cdk.Stack {
       ],
     });
 
-    // ── ECR Repository ──────────────────────────────────────────────────
-    this.ecrRepo = new ecr.Repository(this, 'AgentRepo', {
-      repositoryName: 'nanoclawbot-agent',
-      removalPolicy: isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
-      emptyOnDelete: !isProd,
-    });
+    // ── ECR Repository (created by deploy.sh, looked up here) ──────────
+    this.ecrRepo = ecr.Repository.fromRepositoryName(
+      this, 'AgentRepo', 'nanoclawbot-agent',
+    );
 
     // ── SQS: Message Queue (FIFO) ──────────────────────────────────────
     this.dlq = new sqs.Queue(this, 'MessagesDlq', {
@@ -173,5 +171,11 @@ export class FoundationStack extends cdk.Stack {
       partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'sk', type: dynamodb.AttributeType.STRING },
     });
+
+    // ── Stack Outputs (used by deploy.sh) ──────────────────────────────
+    new cdk.CfnOutput(this, 'DataBucketName', { value: this.dataBucket.bucketName });
+    new cdk.CfnOutput(this, 'MessageQueueUrl', { value: this.messageQueue.queueUrl });
+    new cdk.CfnOutput(this, 'MessageQueueArn', { value: this.messageQueue.queueArn });
+    new cdk.CfnOutput(this, 'ReplyQueueUrl', { value: this.replyQueue.queueUrl });
   }
 }

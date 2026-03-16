@@ -11,12 +11,14 @@ import { groupsRoutes } from './groups.js';
 import { tasksRoutes } from './tasks.js';
 import { memoryRoutes } from './memory.js';
 import { userRoutes } from './user.js';
+import { adminRoutes } from './admin.js';
 
 // Extend Fastify request to include authenticated user info
 declare module 'fastify' {
   interface FastifyRequest {
     userId: string;
     userEmail: string;
+    isAdmin: boolean;
     /** Raw request body string, stored before JSON parsing for webhook signature verification */
     rawBody?: string;
   }
@@ -56,9 +58,12 @@ export const apiRoutes: FastifyPluginAsync = async (app) => {
         );
         request.userId = payload.sub || 'dev-user';
         request.userEmail = payload.email || 'dev@localhost';
+        const groups = (payload['cognito:groups'] as string[]) || [];
+        request.isAdmin = groups.includes('clawbot-admins');
       } catch {
         request.userId = 'dev-user';
         request.userEmail = 'dev@localhost';
+        request.isAdmin = false;
       }
       return;
     }
@@ -67,6 +72,8 @@ export const apiRoutes: FastifyPluginAsync = async (app) => {
       const payload = await verifier.verify(token);
       request.userId = payload.sub;
       request.userEmail = (payload as Record<string, unknown>).email as string || '';
+      const groups = ((payload as Record<string, unknown>)['cognito:groups'] as string[]) || [];
+      request.isAdmin = groups.includes('clawbot-admins');
     } catch (err) {
       request.log.warn({ err }, 'JWT verification failed');
       return reply.status(401).send({ error: 'Invalid or expired token' });
@@ -80,4 +87,5 @@ export const apiRoutes: FastifyPluginAsync = async (app) => {
   await app.register(tasksRoutes, { prefix: '/bots/:botId/tasks' });
   await app.register(memoryRoutes);
   await app.register(userRoutes);
+  await app.register(adminRoutes, { prefix: '/admin' });
 };

@@ -133,7 +133,8 @@ export class ControlPlaneStack extends cdk.Stack {
         COGNITO_CLIENT_ID: userPoolClient.userPoolClientId,
         SCHEDULER_ROLE_ARN: props.schedulerRoleArn,
         MESSAGE_QUEUE_ARN: props.messageQueueArn,
-        WEBHOOK_BASE_URL: `https://${this.alb.loadBalancerDnsName}`,
+        WEBHOOK_BASE_URL_SSM: `/nanoclawbot/${stage}/webhook-base-url`,
+        AGENTCORE_RUNTIME_ARN_SSM: `/nanoclawbot/${stage}/agentcore-runtime-arn`,
       },
       logging: ecs.LogDrivers.awsLogs({
         logGroup,
@@ -159,6 +160,16 @@ export class ControlPlaneStack extends cdk.Stack {
     // S3 read/write on data bucket
     dataBucket.grantReadWrite(taskRole);
 
+    // SSM Parameter Store — read runtime config (webhook URL, AgentCore ARN)
+    taskRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        sid: 'SsmReadConfig',
+        effect: iam.Effect.ALLOW,
+        actions: ['ssm:GetParameter'],
+        resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/nanoclawbot/${stage}/*`],
+      }),
+    );
+
     // Secrets Manager — CRUD for channel credentials
     taskRole.addToPrincipalPolicy(
       new iam.PolicyStatement({
@@ -172,6 +183,16 @@ export class ControlPlaneStack extends cdk.Stack {
           'secretsmanager:UpdateSecret',
         ],
         resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:nanoclawbot/${stage}/*`],
+      }),
+    );
+
+    // AgentCore — invoke agent runtime
+    taskRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        sid: 'AgentCoreInvoke',
+        effect: iam.Effect.ALLOW,
+        actions: ['bedrock-agentcore:InvokeAgentRuntime'],
+        resources: [`arn:aws:bedrock-agentcore:${this.region}:${this.account}:runtime/nanoclawbot_${stage}-*`],
       }),
     );
 

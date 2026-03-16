@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
@@ -95,6 +96,16 @@ export class FrontendStack extends cdk.Stack {
           ttl: cdk.Duration.seconds(0),
         },
       ],
+    });
+
+    // ── SSM Parameter for webhook base URL ──────────────────────────────
+    // Control plane reads this at runtime to build webhook URLs with the
+    // CloudFront domain (avoids circular CDK dependency since this stack
+    // depends on ControlPlaneStack for the ALB).
+    new ssm.StringParameter(this, 'WebhookBaseUrlParam', {
+      parameterName: `/nanoclawbot/${stage}/webhook-base-url`,
+      stringValue: `https://${this.distribution.distributionDomainName}`,
+      description: 'CloudFront base URL for webhook endpoints',
     });
 
     // ── Outputs ─────────────────────────────────────────────────────────

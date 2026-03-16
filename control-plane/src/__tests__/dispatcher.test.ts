@@ -1,12 +1,20 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { InvocationPayload, InvocationResult } from '@clawbot/shared';
 import type { Logger } from 'pino';
+
+// Mock the AWS SDK client
+const mockSend = vi.fn();
+vi.mock('@aws-sdk/client-bedrock-agentcore', () => ({
+  BedrockAgentCoreClient: vi.fn().mockImplementation(() => ({ send: mockSend })),
+  InvokeAgentRuntimeCommand: vi.fn().mockImplementation((input: unknown) => input),
+}));
 
 // Stub config before importing the module under test
 vi.mock('../config.js', () => ({
   config: {
+    region: 'us-east-1',
     agentcore: {
-      runtimeArn: 'http://agentcore.test/invocations',
+      runtimeArn: 'arn:aws:bedrock:us-east-1:123456789012:agent-runtime/test-runtime',
     },
   },
 }));
@@ -36,18 +44,28 @@ const basePayload: InvocationPayload = {
 
 describe('invokeAgent', () => {
   let invokeAgent: (payload: InvocationPayload, logger: Logger) => Promise<InvocationResult>;
-  const originalFetch = globalThis.fetch;
 
   beforeEach(async () => {
     vi.resetModules();
-    // Re-import to pick up fresh mocks each time
+    mockSend.mockReset();
+
+    // Re-mock SDK after resetModules
+    vi.doMock('@aws-sdk/client-bedrock-agentcore', () => ({
+      BedrockAgentCoreClient: vi.fn().mockImplementation(() => ({ send: mockSend })),
+      InvokeAgentRuntimeCommand: vi.fn().mockImplementation((input: unknown) => input),
+    }));
+
+    vi.doMock('../config.js', () => ({
+      config: {
+        region: 'us-east-1',
+        agentcore: {
+          runtimeArn: 'arn:aws:bedrock:us-east-1:123456789012:agent-runtime/test-runtime',
+        },
+      },
+    }));
+
     const mod = await import('../sqs/dispatcher.js');
     invokeAgent = mod.invokeAgent;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-    vi.restoreAllMocks();
   });
 
   it('returns parsed output on successful invocation', async () => {
@@ -58,41 +76,39 @@ describe('invokeAgent', () => {
       tokensUsed: 1500,
     };
 
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve({ output: expected }),
+    mockSend.mockResolvedValue({
+      response: {
+        transformToString: () => Promise.resolve(JSON.stringify({ output: expected })),
+      },
+      runtimeSessionId: 'bot-1---tg:123',
     });
 
     const result = await invokeAgent(basePayload, mockLogger);
 
     expect(result).toEqual(expected);
-    expect(globalThis.fetch).toHaveBeenCalledOnce();
+    expect(mockSend).toHaveBeenCalledOnce();
 
-    const [url, opts] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe('http://agentcore.test/invocations');
-    expect(opts.method).toBe('POST');
-    expect(opts.headers).toEqual({ 'Content-Type': 'application/json' });
-    expect(JSON.parse(opts.body)).toEqual(basePayload);
-    expect(opts.signal).toBeInstanceOf(AbortSignal);
+    const command = mockSend.mock.calls[0][0];
+    expect(command.agentRuntimeArn).toBe(
+      'arn:aws:bedrock:us-east-1:123456789012:agent-runtime/test-runtime',
+    );
+    expect(command.contentType).toBe('application/json');
+    expect(command.runtimeSessionId).toBe('bot-1---tg:123');
+    expect(JSON.parse(Buffer.from(command.payload).toString())).toEqual(basePayload);
   });
 
-  it('returns error result on HTTP failure without throwing', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 503,
-      text: () => Promise.resolve('Service Unavailable'),
-    });
+  it('returns error result on SDK failure without throwing', async () => {
+    mockSend.mockRejectedValue(new Error('Service Unavailable'));
 
     const result = await invokeAgent(basePayload, mockLogger);
 
     expect(result.status).toBe('error');
     expect(result.result).toBeNull();
-    expect(result.error).toContain('503');
     expect(result.error).toContain('Service Unavailable');
   });
 
   it('returns error result on network failure without throwing', async () => {
-    globalThis.fetch = vi.fn().mockRejectedValue(new Error('Connection refused'));
+    mockSend.mockRejectedValue(new Error('Connection refused'));
 
     const result = await invokeAgent(basePayload, mockLogger);
 
@@ -101,10 +117,10 @@ describe('invokeAgent', () => {
     expect(result.error).toContain('Connection refused');
   });
 
-  it('returns error when runtime URL is not configured', async () => {
-    // Re-mock config with empty runtimeArn
+  it('returns error when runtime ARN is not configured', async () => {
     vi.doMock('../config.js', () => ({
       config: {
+        region: 'us-east-1',
         agentcore: {
           runtimeArn: '',
         },
@@ -112,17 +128,21 @@ describe('invokeAgent', () => {
     }));
     vi.resetModules();
 
+    vi.doMock('@aws-sdk/client-bedrock-agentcore', () => ({
+      BedrockAgentCoreClient: vi.fn().mockImplementation(() => ({ send: mockSend })),
+      InvokeAgentRuntimeCommand: vi.fn().mockImplementation((input: unknown) => input),
+    }));
+
     const mod = await import('../sqs/dispatcher.js');
     const invokeAgentNoConfig = mod.invokeAgent;
 
-    globalThis.fetch = vi.fn();
+    mockSend.mockReset();
 
     const result = await invokeAgentNoConfig(basePayload, mockLogger);
 
     expect(result.status).toBe('error');
     expect(result.result).toBeNull();
     expect(result.error).toContain('not configured');
-    // fetch should never be called when config is missing
-    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 });

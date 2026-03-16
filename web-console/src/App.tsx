@@ -7,6 +7,8 @@ import ChannelSetup from './pages/ChannelSetup';
 import Messages from './pages/Messages';
 import Tasks from './pages/Tasks';
 import MemoryEditor from './pages/MemoryEditor';
+import UserList from './pages/admin/UserList';
+import UserDetail from './pages/admin/UserDetail';
 import Layout from './components/Layout';
 
 export default function App() {
@@ -31,6 +33,12 @@ export default function App() {
         <Route path="/memory" element={<MemoryEditor />} />
         <Route path="/bots/:botId/memory" element={<MemoryEditor />} />
         <Route path="/bots/:botId/groups/:groupJid/memory" element={<MemoryEditor />} />
+        {user.isAdmin && (
+          <>
+            <Route path="/admin/users" element={<UserList />} />
+            <Route path="/admin/users/:userId" element={<UserDetail />} />
+          </>
+        )}
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
     </Layout>

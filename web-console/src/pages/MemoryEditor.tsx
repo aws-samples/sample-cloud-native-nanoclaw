@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { memory } from '../lib/api';
 
@@ -11,6 +11,12 @@ export default function MemoryEditor() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+
+  // Remember botId/groupJid so tab buttons stay visible when switching to /memory (shared)
+  const lastBotId = useRef(botId);
+  const lastGroupJid = useRef(groupJid);
+  if (botId) lastBotId.current = botId;
+  if (groupJid) lastGroupJid.current = groupJid;
 
   const level: Level = botId && groupJid ? 'group' : botId ? 'bot-global' : 'shared';
 
@@ -89,14 +95,14 @@ export default function MemoryEditor() {
           className={`px-3 py-1 rounded-full ${level === 'shared' ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
           Shared
         </Link>
-        {botId && (
-          <Link to={`/bots/${botId}/memory`}
+        {lastBotId.current && (
+          <Link to={`/bots/${lastBotId.current}/memory`}
             className={`px-3 py-1 rounded-full ${level === 'bot-global' ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
             Bot Global
           </Link>
         )}
-        {botId && groupJid && (
-          <Link to={`/bots/${botId}/groups/${groupJid}/memory`}
+        {lastBotId.current && lastGroupJid.current && (
+          <Link to={`/bots/${lastBotId.current}/groups/${lastGroupJid.current}/memory`}
             className={`px-3 py-1 rounded-full ${level === 'group' ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
             Group
           </Link>

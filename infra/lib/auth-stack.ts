@@ -19,7 +19,7 @@ export class AuthStack extends cdk.Stack {
     // ── Cognito User Pool ───────────────────────────────────────────────
     this.userPool = new cognito.UserPool(this, 'UserPool', {
       userPoolName: `nanoclawbot-${stage}-users`,
-      selfSignUpEnabled: true,
+      selfSignUpEnabled: false,
       signInAliases: {
         email: true,
       },

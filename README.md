@@ -63,30 +63,59 @@ Security: WAF │ ABAC via STS SessionTags │ Per-tenant S3/DynamoDB isolation
 ## Prerequisites
 
 - Node.js >= 20
-- AWS account with CDK bootstrapped
+- Docker (for building ARM64 container images)
 - AWS CLI configured (`aws configure`)
+- AWS CDK bootstrapped (`cd infra && npx cdk bootstrap`)
+- `jq` installed (used by deploy script for JSON parsing)
 
-## Quick Start
+## Deployment
+
+### One-Command Deploy
 
 ```bash
-# Install dependencies
-npm install
+# Full deployment (default stage: dev)
+./scripts/deploy.sh
 
-# Build all packages
-npm run build --workspaces
+# Deploy to a specific stage
+CDK_STAGE=prod AWS_REGION=us-east-1 ./scripts/deploy.sh
+```
 
-# Deploy infrastructure (first time)
-cd infra
-npx cdk bootstrap   # once per account/region
-npx cdk deploy --all
+The deploy script runs 15 steps in order:
+1. Pre-flight checks (aws, docker, node, jq)
+2. `npm install` + build all workspaces
+3. ECR login (creates repos if missing)
+4. Build & push control-plane Docker image (ARM64)
+5. Build & push agent-runtime Docker image (ARM64)
+6. CDK deploy all 6 stacks
+7. Read stack outputs (Cognito IDs, bucket names, role ARNs, ALB DNS, CDN domain)
+8. Register AgentCore runtime (idempotent — skips if already exists)
+9. Wait for AgentCore status READY
+10. Update ECS task definition with `AGENTCORE_RUNTIME_ARN` env var
+11. Force new ECS deployment
+12. Build web-console with Cognito config injected via env vars
+13. Sync `web-console/dist/` to S3 frontend bucket
+14. CloudFront cache invalidation
+15. Smoke test (`/health` endpoint)
 
+### Teardown
+
+```bash
+./scripts/destroy.sh                    # default stage: dev
+CDK_STAGE=prod ./scripts/destroy.sh     # specific stage
+```
+
+Reverse order: delete AgentCore runtime (wait for deletion) → CDK destroy all stacks → delete ECR repos.
+
+### Local Development
+
+```bash
 # Run control plane locally (pointing at deployed AWS resources)
-cd ../control-plane
+cd control-plane
 cp .env.example .env   # fill in values from CDK outputs
 npm run dev
 
 # Run web console locally
-cd ../web-console
+cd web-console
 npm run dev            # opens http://localhost:5173
 ```
 
@@ -94,6 +123,9 @@ npm run dev            # opens http://localhost:5173
 
 ```
 cloud_native_nanoclaw/
+├── scripts/
+│   ├── deploy.sh             # One-command full deployment (15 steps)
+│   └── destroy.sh            # Reverse teardown
 ├── shared/src/
 │   ├── types.ts              # User, Bot, Channel, Message, Task, Session...
 │   ├── xml-formatter.ts      # Agent context formatting (from NanoClaw)

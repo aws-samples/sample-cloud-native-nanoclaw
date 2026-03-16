@@ -26,7 +26,7 @@ export default function Dashboard() {
   async function loadUsage() {
     try {
       const me = await userApi.me();
-      if (me.usage) setUsage(me.usage);
+      if (me.usage) setUsage({ month: me.usage.month || '', tokens: me.usage.tokens ?? 0, invocations: me.usage.invocations ?? 0 });
       if (me.quota) setQuota(me.quota);
     } catch (err) {
       console.error('Failed to load usage:', err);

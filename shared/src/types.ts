@@ -13,6 +13,14 @@ export interface UserQuota {
   maxMonthlyTokens: number;
 }
 
+export const DEFAULT_QUOTA: UserQuota = {
+  maxBots: 5,
+  maxGroupsPerBot: 20,
+  maxTasksPerBot: 50,
+  maxConcurrentAgents: 3,
+  maxMonthlyTokens: 100_000_000,
+};
+
 export interface User {
   userId: string; // Cognito sub
   email: string;

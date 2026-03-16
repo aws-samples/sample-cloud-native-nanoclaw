@@ -11,9 +11,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
             <div className="flex items-center">
-              <Link to="/" className="text-xl font-bold text-indigo-600">ClawBot Cloud</Link>
+              <Link to="/" className="text-xl font-bold text-indigo-600">NanoClaw Cloud</Link>
             </div>
             <div className="flex items-center gap-4">
+              {user?.isAdmin && (
+                <Link to="/admin/users" className="text-sm text-indigo-600 hover:text-indigo-500 font-medium">Admin</Link>
+              )}
               <span className="text-sm text-gray-600">{user?.email}</span>
               <button onClick={logout} className="text-sm text-gray-500 hover:text-gray-700">Sign out</button>
             </div>

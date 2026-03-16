@@ -3,6 +3,10 @@
 // Receives SQS messages, loads context, invokes agent, stores reply, sends to channel
 
 import type { Message as SQSMessage } from '@aws-sdk/client-sqs';
+import {
+  BedrockAgentCoreClient,
+  InvokeAgentRuntimeCommand,
+} from '@aws-sdk/client-bedrock-agentcore';
 import { formatMessages, formatOutbound } from '@clawbot/shared';
 import type {
   ChannelType,
@@ -17,7 +21,7 @@ import { config } from '../config.js';
 import {
   getGroup,
   getRecentMessages,
-  getUser,
+  ensureUser,
   putMessage,
   putSession,
   getTask,
@@ -62,9 +66,9 @@ async function dispatchMessage(
     return;
   }
 
-  // 2. Quota checks — load user and verify limits before proceeding
-  const user = await getUser(payload.userId);
-  if (user && user.usageTokens >= user.quota.maxMonthlyTokens) {
+  // 2. Quota checks — load user (auto-provision with defaults if needed)
+  const user = await ensureUser(payload.userId);
+  if (user.usageTokens >= user.quota.maxMonthlyTokens) {
     logger.warn(
       { userId: payload.userId, usageTokens: user.usageTokens, maxMonthlyTokens: user.quota.maxMonthlyTokens },
       'User monthly token quota exceeded, dropping message',
@@ -81,7 +85,7 @@ async function dispatchMessage(
   }
 
   // 3. Acquire concurrency slot (atomic DynamoDB increment)
-  const maxAgents = user?.quota.maxConcurrentAgents ?? 1;
+  const maxAgents = user.quota.maxConcurrentAgents;
   const slotAcquired = await checkAndAcquireAgentSlot(payload.userId, maxAgents);
   if (!slotAcquired) {
     // Don't delete the SQS message — let it retry after visibility timeout
@@ -275,21 +279,21 @@ async function dispatchTask(
   }
 }
 
-// ── Agent Invocation (AgentCore Runtime) ─────────────────────────────────────
+// ── Agent Invocation (AgentCore Runtime via AWS SDK) ─────────────────────────
 
-const AGENT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes — agent turns can be long
+const agentcoreClient = new BedrockAgentCoreClient({ region: config.region });
 
 export async function invokeAgent(
   payload: InvocationPayload,
   logger: Logger,
 ): Promise<InvocationResult> {
-  const runtimeUrl = config.agentcore.runtimeArn;
-  if (!runtimeUrl) {
-    logger.error('AgentCore runtime URL is not configured (AGENTCORE_RUNTIME_ARN)');
+  const runtimeArn = config.agentcore.runtimeArn;
+  if (!runtimeArn) {
+    logger.error('AgentCore runtime ARN is not configured (AGENTCORE_RUNTIME_ARN)');
     return {
       status: 'error',
       result: null,
-      error: 'AgentCore runtime URL is not configured',
+      error: 'AgentCore runtime ARN is not configured',
     };
   }
 
@@ -303,32 +307,21 @@ export async function invokeAgent(
     'Invoking AgentCore runtime',
   );
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), AGENT_TIMEOUT_MS);
-
   try {
-    const response = await fetch(runtimeUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
+    const response = await agentcoreClient.send(
+      new InvokeAgentRuntimeCommand({
+        agentRuntimeArn: runtimeArn,
+        payload: Buffer.from(JSON.stringify(payload)),
+        contentType: 'application/json',
+        accept: 'application/json',
+        runtimeSessionId: `${payload.botId}---${payload.groupJid}`,
+      }),
+    );
 
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => 'no body');
-      logger.error(
-        { status: response.status, errorBody },
-        'AgentCore runtime returned non-OK status',
-      );
-      return {
-        status: 'error',
-        result: null,
-        error: `AgentCore returned HTTP ${response.status}: ${errorBody}`,
-      };
-    }
-
-    const body = (await response.json()) as { output: InvocationResult };
-    return body.output;
+    const resultText = (await response.response?.transformToString()) || '{}';
+    const body = JSON.parse(resultText) as InvocationResult & { output?: InvocationResult };
+    // Support both formats: {output: InvocationResult} and direct InvocationResult
+    return body.output ?? body;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error({ err }, 'AgentCore runtime invocation failed');
@@ -337,8 +330,6 @@ export async function invokeAgent(
       result: null,
       error: `AgentCore invocation failed: ${message}`,
     };
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

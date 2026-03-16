@@ -4,7 +4,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import pino from 'pino';
-import { config } from './config.js';
+import { config, resolveConfig } from './config.js';
 import { healthRoutes } from './routes/health.js';
 import { apiRoutes } from './routes/api/index.js';
 import { webhookRoutes } from './webhooks/index.js';
@@ -15,6 +15,8 @@ import { startHealthCheckLoop, stopHealthCheckLoop } from './services/health-che
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 async function main() {
+  await resolveConfig();
+
   const app = Fastify({ loggerInstance: logger });
 
   await app.register(cors, { origin: config.corsOrigin });
