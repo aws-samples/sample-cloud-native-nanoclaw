@@ -199,6 +199,9 @@ export interface MemoryPaths {
   shared: string; // {userId}/shared/CLAUDE.md (read-only)
   botGlobal: string; // {userId}/{botId}/memory/global/CLAUDE.md (read-only)
   group: string; // {userId}/{botId}/memory/{groupJid}/CLAUDE.md (read-write)
+  persona?: string; // {userId}/{botId}/PERSONA.md (read-only, identity + tone)
+  bootstrap?: string; // {userId}/{botId}/BOOTSTRAP.md (read-only, new-session-only)
+  user?: string; // {userId}/{botId}/memory/{groupJid}/USER.md (read-only, about humans)
 }
 
 // Evolved from NanoClaw's ContainerOutput (stdout markers)

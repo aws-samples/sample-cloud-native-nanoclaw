@@ -186,4 +186,10 @@ export const memory = {
   updateBotGlobal: (botId: string, content: string) => request<MemoryResponse>(`/bots/${botId}/memory`, { method: 'PUT', body: JSON.stringify({ content }) }),
   getGroup: (botId: string, gid: string) => request<MemoryResponse>(`/bots/${botId}/groups/${gid}/memory`),
   updateGroup: (botId: string, gid: string, content: string) => request<MemoryResponse>(`/bots/${botId}/groups/${gid}/memory`, { method: 'PUT', body: JSON.stringify({ content }) }),
+  getPersona: (botId: string) => request<MemoryResponse>(`/bots/${botId}/persona`),
+  updatePersona: (botId: string, content: string) => request<MemoryResponse>(`/bots/${botId}/persona`, { method: 'PUT', body: JSON.stringify({ content }) }),
+  getBootstrap: (botId: string) => request<MemoryResponse>(`/bots/${botId}/bootstrap`),
+  updateBootstrap: (botId: string, content: string) => request<MemoryResponse>(`/bots/${botId}/bootstrap`, { method: 'PUT', body: JSON.stringify({ content }) }),
+  getUserContext: (botId: string, gid: string) => request<MemoryResponse>(`/bots/${botId}/groups/${gid}/user-context`),
+  updateUserContext: (botId: string, gid: string, content: string) => request<MemoryResponse>(`/bots/${botId}/groups/${gid}/user-context`, { method: 'PUT', body: JSON.stringify({ content }) }),
 };

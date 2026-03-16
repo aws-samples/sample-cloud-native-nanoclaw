@@ -7,26 +7,29 @@
     "build": "tsc",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.76",
-    "@clawbot/shared": "*",
-    "fastify": "^5.2.0",
-    "@aws-sdk/client-s3": "^3.700.0",
-    "@aws-sdk/client-sqs": "^3.700.0",
     "@aws-sdk/client-dynamodb": "^3.700.0",
-    "@aws-sdk/lib-dynamodb": "^3.700.0",
+    "@aws-sdk/client-s3": "^3.700.0",
     "@aws-sdk/client-scheduler": "^3.700.0",
+    "@aws-sdk/client-sqs": "^3.700.0",
     "@aws-sdk/client-sts": "^3.700.0",
+    "@aws-sdk/lib-dynamodb": "^3.700.0",
+    "@clawbot/shared": "*",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "cron-parser": "^5.5.0",
+    "fastify": "^5.2.0",
     "pino": "^9.6.0",
-    "zod": "^4.0.0",
-    "cron-parser": "^5.5.0"
+    "zod": "^4.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
+    "@types/node": "^22.10.0",
     "tsx": "^4.19.0",
-    "@types/node": "^22.10.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.0"
   }
 }

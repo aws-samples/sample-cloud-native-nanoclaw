@@ -29,6 +29,12 @@ export interface SyncPaths {
   botGlobalMemory: string;
   /** S3 key for user shared CLAUDE.md (read-only) */
   sharedMemory: string;
+  /** S3 key for PERSONA.md — bot identity + tone (read-only) */
+  personaFile?: string;
+  /** S3 key for BOOTSTRAP.md — new-session-only instructions (read-only) */
+  bootstrapFile?: string;
+  /** S3 key for USER.md — about the humans in this conversation (read-only) */
+  userFile?: string;
 }
 
 /**
@@ -52,6 +58,21 @@ export async function syncFromS3(
 
   // 4. Download shared memory → /workspace/shared/CLAUDE.md (read-only)
   await downloadFile(s3, bucket, paths.sharedMemory, join(WORKSPACE_BASE, 'shared', 'CLAUDE.md'), logger);
+
+  // 5. Download PERSONA.md → /workspace/persona/PERSONA.md (read-only)
+  if (paths.personaFile) {
+    await downloadFile(s3, bucket, paths.personaFile, join(WORKSPACE_BASE, 'persona', 'PERSONA.md'), logger);
+  }
+
+  // 6. Download BOOTSTRAP.md → /workspace/persona/BOOTSTRAP.md (read-only)
+  if (paths.bootstrapFile) {
+    await downloadFile(s3, bucket, paths.bootstrapFile, join(WORKSPACE_BASE, 'persona', 'BOOTSTRAP.md'), logger);
+  }
+
+  // 7. Download USER.md → /workspace/group/USER.md (read-only)
+  if (paths.userFile) {
+    await downloadFile(s3, bucket, paths.userFile, join(WORKSPACE_BASE, 'group', 'USER.md'), logger);
+  }
 }
 
 /**

@@ -8,6 +8,9 @@
 | [2](#2-agentcore-runtime-镜像更新流程优化) | AgentCore runtime 镜像更新流程优化 | 待优化 | 中 |
 | [3](#3-s3-abac-prefix-condition-不生效) | S3 ABAC prefix condition 不生效 | 待研究 | 低 |
 | [4](#4-agentcore-runtime-cloudwatch-logs-不写入) | ~~AgentCore runtime CloudWatch Logs 不写入~~ | 已解决 | — |
+| [5](#5-system-prompt-builder-单元测试) | System Prompt Builder 单元测试 | 待编写 | 中 |
+| [6](#6-清理-agent-runtime-debug-代码) | 清理 agent-runtime debug 代码 | 待清理 | 高 |
+| [7](#7-旧-discord-gateway-manager-死代码清理) | 旧 Discord gateway-manager 死代码清理 | 待清理 | 低 |
 
 ---
 
@@ -111,3 +114,58 @@ AgentBaseRole 缺少 CloudWatch Logs 权限。AWS 文档明确要求 execution r
 ### 参考
 
 https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html
+
+---
+
+## 5. System Prompt Builder 单元测试
+
+**状态**: 待编写
+**日期**: 2026-03-16
+**优先级**: 中
+
+### 待编写
+
+- [ ] `agent-runtime/src/system-prompt.ts` — 测试 8 个 section 的组装逻辑、null section 跳过、section 排序
+- [ ] `agent-runtime/src/memory.ts` — 测试 `truncateContent` 边界条件（空字符串、恰好等于 cap、超出 cap、极小 budget）
+- [ ] `agent-runtime/src/memory.ts` — 测试 `loadMemoryLayers` 总量上限强制截断
+- [ ] Bootstrap 注入的 `isNewSession` 门控测试
+
+### 备注
+
+这些都是纯函数，输入输出明确，非常适合单元测试。agent-runtime 目前没有测试框架，需要先配置 vitest。
+
+---
+
+## 6. 清理 agent-runtime debug 代码
+
+**状态**: 待清理
+**日期**: 2026-03-16
+**优先级**: 高（部署生产环境前必须清理）
+
+### 待清理
+
+- [ ] `agent-runtime/src/agent.ts` — 移除 `debugFiles` 文件系统遍历和 `_debugFiles` 附加到 result
+- [ ] `agent-runtime/src/server.ts` — 移除 error response 中的 `[ENV: ...]` 诊断信息
+- [ ] `agent-runtime/src/scoped-credentials.ts` — 移除 `[ABAC-DEBUG]` console.log
+
+### 备注
+
+这些代码在每次 invocation 时读取文件系统并修改返回类型，不应出现在生产环境。
+
+---
+
+## 7. 旧 Discord gateway-manager 死代码清理
+
+**状态**: 待清理
+**日期**: 2026-03-16
+**优先级**: 低
+
+### 待清理
+
+- [ ] `control-plane/src/discord/gateway-manager.ts` — 已被 `adapters/discord/index.ts` 替代
+- [ ] `control-plane/src/discord/message-handler.ts` — 逻辑已整合入 DiscordAdapter
+- [ ] `control-plane/src/channels/discord.ts` — 部分仍被 `channels/index.ts` 和 `reply-consumer.ts` 引用，待 reply-consumer 完全迁移后可删
+
+### 备注
+
+`channels/discord.ts` 中的 `verifyCredentials` 和 `getGatewayBot` 仍被 `channels/index.ts` 使用（channel 创建时验证凭证），不能直接删除。需要将验证逻辑迁移到 DiscordAdapter 后才能完全清理。

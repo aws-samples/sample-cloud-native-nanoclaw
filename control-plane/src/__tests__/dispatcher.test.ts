@@ -39,6 +39,9 @@ const basePayload: InvocationPayload = {
     shared: 'user-1/shared/CLAUDE.md',
     botGlobal: 'user-1/bot-1/memory/global/CLAUDE.md',
     group: 'user-1/bot-1/memory/tg:123/CLAUDE.md',
+    persona: 'user-1/bot-1/PERSONA.md',
+    bootstrap: 'user-1/bot-1/BOOTSTRAP.md',
+    user: 'user-1/bot-1/memory/tg:123/USER.md',
   },
 };
 

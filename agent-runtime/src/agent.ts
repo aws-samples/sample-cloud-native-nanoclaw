@@ -26,7 +26,7 @@ import { S3Client } from '@aws-sdk/client-s3';
 import type pino from 'pino';
 import type { InvocationPayload, InvocationResult } from '@clawbot/shared';
 import { syncFromS3, syncToS3, type SyncPaths } from './session.js';
-import { loadMemoryLayers } from './memory.js';
+import { buildSystemPrompt } from './system-prompt.js';
 import { getScopedClients } from './scoped-credentials.js';
 import { setBusy, setIdle } from './server.js';
 
@@ -36,7 +36,7 @@ const SESSION_BUCKET = process.env.SESSION_BUCKET || '';
 let currentSessionKey: string | undefined;
 
 async function cleanLocalWorkspace(): Promise<void> {
-  for (const dir of ['/workspace/group', '/workspace/global', '/workspace/shared', '/home/node/.claude']) {
+  for (const dir of ['/workspace/group', '/workspace/global', '/workspace/shared', '/workspace/persona', '/home/node/.claude']) {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
     try { mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
   }
@@ -89,23 +89,34 @@ async function _handleInvocation(
     groupMemory: memoryPaths.group,
     botGlobalMemory: memoryPaths.botGlobal,
     sharedMemory: memoryPaths.shared,
+    personaFile: memoryPaths.persona,
+    bootstrapFile: memoryPaths.bootstrap,
+    userFile: memoryPaths.user,
   };
 
   logger.info({ sessionPath, groupJid }, 'Syncing session from S3');
   await syncFromS3(s3, SESSION_BUCKET, syncPaths, logger);
 
-  // 3. Load memory layers into system prompt
-  const memoryContent = await loadMemoryLayers();
+  // 3. Detect existing session (needed for bootstrap injection decision)
+  const existingSessionId = detectExistingSession();
+  const isNewSession = !existingSessionId;
+
+  // 4. Build structured system prompt (identity, persona, channel, memory, etc.)
+  const systemPromptContent = await buildSystemPrompt({
+    botId,
+    botName,
+    channelType: payload.channelType,
+    groupJid,
+    systemPrompt: payload.systemPrompt,
+    isScheduledTask: payload.isScheduledTask,
+    isNewSession,
+  });
   logger.info(
-    { memoryLength: memoryContent.length },
-    'Memory layers loaded',
+    { systemPromptLength: systemPromptContent.length, isNewSession },
+    'System prompt built',
   );
 
-  // 4. Build prompt (prepend scheduled-task marker like NanoClaw does)
-  let agentPrompt = prompt;
-  if (payload.isScheduledTask) {
-    agentPrompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${prompt}`;
-  }
+  const agentPrompt = prompt;
 
   // 5. Build environment for Claude Agent SDK
   //    CLAUDE_CODE_USE_BEDROCK=1 is set in the container env, but ensure it's passed through
@@ -117,18 +128,14 @@ async function _handleInvocation(
   // 6. Resolve MCP server path (mcp-server.js in same dist directory)
   const mcpServerPath = path.join(__dirname, 'mcp-server.js');
 
-  // 7. Determine session ID for resumption
-  //    If the payload doesn't specify one, Claude SDK will create a new session
-  const existingSessionId = detectExistingSession();
-
-  // 8. Run Claude Agent SDK query
+  // 7. Run Claude Agent SDK query
   logger.info({ sessionId: existingSessionId || 'new' }, 'Starting agent query');
   const result = await runAgentQuery({
     prompt: agentPrompt,
     sessionId: existingSessionId,
     mcpServerPath,
     sdkEnv,
-    memoryContent,
+    systemPromptContent,
     botId,
     botName,
     groupJid,
@@ -176,7 +183,7 @@ interface QueryParams {
   sessionId: string | undefined;
   mcpServerPath: string;
   sdkEnv: Record<string, string | undefined>;
-  memoryContent: string;
+  systemPromptContent: string;
   botId: string;
   botName: string;
   groupJid: string;
@@ -186,7 +193,7 @@ interface QueryParams {
 }
 
 async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
-  const { prompt, sessionId, mcpServerPath, sdkEnv, memoryContent, payload, logger } = params;
+  const { prompt, sessionId, mcpServerPath, sdkEnv, systemPromptContent, payload, logger } = params;
 
   let newSessionId: string | undefined;
   let lastResult: string | null = null;
@@ -217,8 +224,8 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
         cwd: '/workspace/group',
         additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
         resume: sessionId,
-        systemPrompt: memoryContent
-          ? { type: 'preset' as const, preset: 'claude_code' as const, append: memoryContent }
+        systemPrompt: systemPromptContent
+          ? { type: 'preset' as const, preset: 'claude_code' as const, append: systemPromptContent }
           : undefined,
         // Same tool allowlist as NanoClaw's agent-runner
         allowedTools: [

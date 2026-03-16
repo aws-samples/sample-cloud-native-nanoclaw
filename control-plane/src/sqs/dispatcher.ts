@@ -126,6 +126,9 @@ async function dispatchMessage(
         shared: `${payload.userId}/shared/CLAUDE.md`,
         botGlobal: `${payload.userId}/${payload.botId}/memory/global/CLAUDE.md`,
         group: `${payload.userId}/${payload.botId}/memory/${payload.groupJid}/CLAUDE.md`,
+        persona: `${payload.userId}/${payload.botId}/PERSONA.md`,
+        bootstrap: `${payload.userId}/${payload.botId}/BOOTSTRAP.md`,
+        user: `${payload.userId}/${payload.botId}/memory/${payload.groupJid}/USER.md`,
       },
       ...(payload.attachments && payload.attachments.length > 0 && {
         attachments: payload.attachments,
@@ -254,6 +257,9 @@ async function dispatchTask(
       shared: `${payload.userId}/shared/CLAUDE.md`,
       botGlobal: `${payload.userId}/${payload.botId}/memory/global/CLAUDE.md`,
       group: `${payload.userId}/${payload.botId}/memory/${payload.groupJid}/CLAUDE.md`,
+      persona: `${payload.userId}/${payload.botId}/PERSONA.md`,
+      bootstrap: `${payload.userId}/${payload.botId}/BOOTSTRAP.md`,
+      user: `${payload.userId}/${payload.botId}/memory/${payload.groupJid}/USER.md`,
     },
   };
 
