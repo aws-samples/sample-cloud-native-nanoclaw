@@ -9,14 +9,13 @@
  *   Dynamic sections  — assembled from context files + runtime config
  *
  * Section order:
- *   [Base Template]        — Role, Tools, Tool Call Style, Context Files, Safety, Communication Style
+ *   [Base Template]        — Role, Tools, Tool Call Style, Context Files, Communication Style
  *   1. Identity            — "You are {botName}..."
  *   2. Identity Context    — IDENTITY.md or Bot.systemPrompt fallback
  *   3. Soul               — SOUL.md (values and behavior)
  *   4. Bootstrap           — BOOTSTRAP.md (only for new sessions)
  *   5. Channel             — Channel-specific formatting guidance
  *   6. Reply Guide         — Response conventions
- *   6.5 Anti-Loop          — Group chat anti-loop rules (only when isGroupChat)
  *   7. User Context        — USER.md (about the human user)
  *   8. Memory              — Shared + Bot Global + Group CLAUDE.md (with token budgets)
  *   9. Runtime             — Metadata line for debugging (includes model)
@@ -59,8 +58,6 @@ export interface SystemPromptOptions {
   isNewSession: boolean;
   /** Current model ID for runtime metadata */
   model?: string;
-  /** Whether this is a group chat (enables anti-loop rules) */
-  isGroupChat?: boolean;
   truncationConfig?: TruncationConfig;
 }
 
@@ -74,7 +71,7 @@ export async function buildSystemPrompt(
   const config = opts.truncationConfig ?? DEFAULT_TRUNCATION;
   const sections: string[] = [];
 
-  // 0. Base template (Role, Tools, Context Files, Safety, Communication Style)
+  // 0. Base template (Role, Tools, Context Files, Communication Style)
   sections.push(baseTemplate);
 
   // 1. Identity
@@ -99,11 +96,6 @@ export async function buildSystemPrompt(
 
   // 6. Reply guidelines
   sections.push(buildReplyGuidelines(opts.isScheduledTask));
-
-  // 6.5 Anti-loop (group chats only)
-  if (opts.isGroupChat) {
-    sections.push(buildAntiLoopSection());
-  }
 
   // 7. User context (USER.md)
   const userCtx = await buildUserContextSection(config);
@@ -269,14 +261,4 @@ function buildRuntimeMetadata(opts: SystemPromptOptions): string {
   ];
   if (opts.model) parts.push(`model=${opts.model}`);
   return `Runtime: ${parts.join(' | ')}`;
-}
-
-// ── Section 6.5: Anti-Loop (group chats) ─────────────────────────────────
-
-function buildAntiLoopSection(): string {
-  return `# Group Chat Rules
-- When @mentioned, you MUST respond — regardless of whether the sender is a human or another bot
-- After responding, do NOT @mention or tag the bot that triggered you — reply to the channel directly
-- If conversation bounces between bots for more than 3 rounds without human participation, stop responding
-- Only respond once per @mention — do not send multiple messages for a single trigger`;
 }

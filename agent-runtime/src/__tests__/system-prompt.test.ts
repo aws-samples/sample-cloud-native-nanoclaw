@@ -208,25 +208,6 @@ describe('buildSystemPrompt', () => {
     expect(result).not.toContain('# Group Memory');
   });
 
-  // ── Section 6.5: Anti-Loop (group chats) ────────────────────────────
-
-  it('includes anti-loop section when isGroupChat is true', async () => {
-    const result = await buildSystemPrompt({ ...baseOpts, isGroupChat: true });
-    expect(result).toContain('# Group Chat Rules');
-    expect(result).toContain('do NOT @mention or tag the bot that triggered you');
-    expect(result).toContain('3 rounds without human participation');
-  });
-
-  it('omits anti-loop section when isGroupChat is false', async () => {
-    const result = await buildSystemPrompt({ ...baseOpts, isGroupChat: false });
-    expect(result).not.toContain('# Group Chat Rules');
-  });
-
-  it('omits anti-loop section when isGroupChat is undefined', async () => {
-    const result = await buildSystemPrompt(baseOpts);
-    expect(result).not.toContain('# Group Chat Rules');
-  });
-
   // ── Section 8: Runtime ──────────────────────────────────────────────
 
   it('always includes runtime metadata', async () => {
