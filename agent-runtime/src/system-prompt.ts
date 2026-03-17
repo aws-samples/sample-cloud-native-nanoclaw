@@ -56,6 +56,10 @@ export interface SystemPromptOptions {
   isScheduledTask?: boolean;
   /** Controls BOOTSTRAP.md injection — true when no existing session */
   isNewSession: boolean;
+  /** Current model ID for runtime metadata */
+  model?: string;
+  /** Whether this is a group chat (enables anti-loop rules) */
+  isGroupChat?: boolean;
   truncationConfig?: TruncationConfig;
 }
 
@@ -94,6 +98,11 @@ export async function buildSystemPrompt(
 
   // 6. Reply guidelines
   sections.push(buildReplyGuidelines(opts.isScheduledTask));
+
+  // 6.5 Anti-loop (group chats only)
+  if (opts.isGroupChat) {
+    sections.push(buildAntiLoopSection());
+  }
 
   // 7. User context (USER.md)
   const userCtx = await buildUserContextSection(config);
@@ -251,5 +260,22 @@ async function buildMemorySection(
 // ── Section 9: Runtime Metadata ───────────────────────────────────────────
 
 function buildRuntimeMetadata(opts: SystemPromptOptions): string {
-  return `Runtime: bot=${opts.botId} | name=${opts.botName} | channel=${opts.channelType} | group=${opts.groupJid}`;
+  const parts = [
+    `bot=${opts.botId}`,
+    `name=${opts.botName}`,
+    `channel=${opts.channelType}`,
+    `group=${opts.groupJid}`,
+  ];
+  if (opts.model) parts.push(`model=${opts.model}`);
+  return `Runtime: ${parts.join(' | ')}`;
+}
+
+// ── Section 6.5: Anti-Loop (group chats) ─────────────────────────────────
+
+function buildAntiLoopSection(): string {
+  return `# Group Chat Rules
+- When @mentioned, you MUST respond — regardless of whether the sender is a human or another bot
+- After responding, do NOT @mention or tag the bot that triggered you — reply to the channel directly
+- If conversation bounces between bots for more than 3 rounds without human participation, stop responding
+- Only respond once per @mention — do not send multiple messages for a single trigger`;
 }

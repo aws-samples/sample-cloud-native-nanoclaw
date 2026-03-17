@@ -126,6 +126,8 @@ async function _handleInvocation(
     systemPrompt: payload.systemPrompt,
     isScheduledTask: payload.isScheduledTask,
     isNewSession,
+    model: payload.model,
+    isGroupChat: payload.isGroupChat,
   });
   logger.info(
     { systemPromptLength: systemPromptContent.length, isNewSession },

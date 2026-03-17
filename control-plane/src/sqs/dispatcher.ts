@@ -112,6 +112,9 @@ async function dispatchMessage(
       'UTC', // TODO: get timezone from bot/user config
     );
 
+    // 5b. Look up group record for isGroup flag
+    const group = await getGroup(payload.botId, payload.groupJid);
+
     // 6. Build invocation payload
     const invocationPayload: InvocationPayload = {
       botId: payload.botId,
@@ -132,6 +135,7 @@ async function dispatchMessage(
         bootstrap: `${payload.userId}/${payload.botId}/BOOTSTRAP.md`,
         user: `${payload.userId}/shared/USER.md`,
       },
+      isGroupChat: group?.isGroup,
       ...(payload.attachments && payload.attachments.length > 0 && {
         attachments: payload.attachments,
       }),
@@ -265,6 +269,7 @@ async function dispatchTask(
       bootstrap: `${payload.userId}/${payload.botId}/BOOTSTRAP.md`,
       user: `${payload.userId}/shared/USER.md`,
     },
+    isGroupChat: group?.isGroup,
   };
 
   const result = await invokeAgent(invocationPayload, logger);

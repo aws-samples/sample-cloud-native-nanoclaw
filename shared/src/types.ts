@@ -194,6 +194,7 @@ export interface InvocationPayload {
   memoryPaths: MemoryPaths;
   attachments?: Attachment[];
   isScheduledTask?: boolean;
+  isGroupChat?: boolean;
   maxTurns?: number;
 }
 
