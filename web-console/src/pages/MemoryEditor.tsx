@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
 import { memory } from '../lib/api';
 
-type Level = 'shared' | 'bot-global' | 'group' | 'identity' | 'soul' | 'bootstrap' | 'user-profile';
+type Level = 'shared' | 'bot-global' | 'group';
 
 const LEVEL_META: Record<Level, { label: string; description: string; placeholder: string }> = {
   shared: {
@@ -12,33 +12,13 @@ const LEVEL_META: Record<Level, { label: string; description: string; placeholde
   },
   'bot-global': {
     label: 'Bot Memory',
-    description: 'Bot-level persistent memory (CLAUDE.md)',
+    description: 'Bot operating manual — identity, personality, rules, and notes (CLAUDE.md)',
     placeholder: 'Enter bot memory content...',
   },
   group: {
     label: 'Group Memory',
     description: 'Conversation-specific memory (CLAUDE.md)',
     placeholder: 'Enter group memory content...',
-  },
-  identity: {
-    label: 'Identity',
-    description: 'Who the bot is (IDENTITY.md)',
-    placeholder: '# Name\nLuna\n\n# Creature\nA friendly fox who loves helping people\n\n# Vibe\nWarm, approachable, and endlessly curious',
-  },
-  soul: {
-    label: 'Soul',
-    description: 'Core values and behavior (SOUL.md)',
-    placeholder: '# Core Truths\n- Honesty above all else\n- Meet people where they are\n\n# Boundaries\n- Never pretend to be human\n- Always admit uncertainty\n\n# Vibe\n- Genuine and grounded\n- Patient with complexity',
-  },
-  bootstrap: {
-    label: 'Bootstrap',
-    description: 'First-session instructions (BOOTSTRAP.md) — only injected when starting a new conversation',
-    placeholder: '# First Contact\n- Greet the user and introduce yourself\n- Ask what they need help with\n- Explain your capabilities briefly',
-  },
-  'user-profile': {
-    label: 'User Profile',
-    description: 'About you — the human user (USER.md, shared across all bots)',
-    placeholder: '# Name\nAlice\n\n# Timezone\nAsia/Shanghai\n\n# Notes\nPrefers concise answers. Working on AI projects.',
   },
 };
 
@@ -88,18 +68,6 @@ export default function MemoryEditor() {
           if (!groupJid) { setError('Group context required'); setLoading(false); return; }
           result = await memory.getGroup(botId!, groupJid);
           break;
-        case 'identity':
-          result = await memory.getIdentity(botId!);
-          break;
-        case 'soul':
-          result = await memory.getSoul(botId!);
-          break;
-        case 'bootstrap':
-          result = await memory.getBootstrap(botId!);
-          break;
-        case 'user-profile':
-          result = await memory.getUserProfile();
-          break;
       }
       setContent(result.content || '');
     } catch (err: any) {
@@ -124,18 +92,6 @@ export default function MemoryEditor() {
         case 'group':
           await memory.updateGroup(botId!, groupJid || '', content);
           break;
-        case 'identity':
-          await memory.updateIdentity(botId!, content);
-          break;
-        case 'soul':
-          await memory.updateSoul(botId!, content);
-          break;
-        case 'bootstrap':
-          await memory.updateBootstrap(botId!, content);
-          break;
-        case 'user-profile':
-          await memory.updateUserProfile(content);
-          break;
       }
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
@@ -149,11 +105,7 @@ export default function MemoryEditor() {
   // Build tab list based on context
   const tabs: { level: Level; to: string }[] = [];
   tabs.push({ level: 'shared', to: '/memory' });
-  tabs.push({ level: 'user-profile', to: '/memory?tab=user-profile' });
   if (lastBotId.current) {
-    tabs.push({ level: 'identity', to: `/bots/${lastBotId.current}/memory?tab=identity` });
-    tabs.push({ level: 'soul', to: `/bots/${lastBotId.current}/memory?tab=soul` });
-    tabs.push({ level: 'bootstrap', to: `/bots/${lastBotId.current}/memory?tab=bootstrap` });
     tabs.push({ level: 'bot-global', to: `/bots/${lastBotId.current}/memory` });
   }
   if (lastBotId.current && lastGroupJid.current) {
