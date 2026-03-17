@@ -36,6 +36,7 @@ export interface Bot {
   description?: string;
   status: string;
   triggerPattern: string;
+  model?: string;
   createdAt: string;
 }
 

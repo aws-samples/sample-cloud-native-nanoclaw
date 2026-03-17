@@ -2,6 +2,20 @@ import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { bots as botsApi, channels as channelsApi, groups as groupsApi, Bot, ChannelConfig, Group } from '../lib/api';
 
+const MODEL_PRESETS = [
+  { label: 'Claude Haiku 4.5', value: 'global.anthropic.claude-haiku-4-5-20251001-v1:0' },
+  { label: 'Claude Sonnet 4.6', value: 'global.anthropic.claude-sonnet-4-6' },
+  { label: 'Claude Opus 4.6', value: 'global.anthropic.claude-opus-4-6-v1' },
+] as const;
+
+const DEFAULT_MODEL = 'global.anthropic.claude-sonnet-4-6';
+
+function getModelSelection(model: string | undefined): string {
+  const m = model || DEFAULT_MODEL;
+  const preset = MODEL_PRESETS.find(p => p.value === m);
+  return preset ? m : 'custom';
+}
+
 export default function BotDetail() {
   const { botId } = useParams<{ botId: string }>();
   const [bot, setBot] = useState<Bot | null>(null);
@@ -11,6 +25,9 @@ export default function BotDetail() {
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState('');
   const [editDesc, setEditDesc] = useState('');
+  const [modelSelection, setModelSelection] = useState<string>('');
+  const [customModelId, setCustomModelId] = useState('');
+  const [savingModel, setSavingModel] = useState(false);
 
   useEffect(() => { if (botId) loadData(); }, [botId]);
 
@@ -26,6 +43,10 @@ export default function BotDetail() {
       setGroups(grps);
       setEditName(botData.name);
       setEditDesc(botData.description || '');
+      setModelSelection(getModelSelection(botData.model));
+      setCustomModelId(
+        MODEL_PRESETS.find(p => p.value === botData.model) ? '' : (botData.model || '')
+      );
     } catch (err) {
       console.error('Failed to load bot:', err);
     } finally {
@@ -37,6 +58,20 @@ export default function BotDetail() {
     await botsApi.update(botId!, { name: editName, description: editDesc });
     setEditing(false);
     loadData();
+  }
+
+  async function saveModel() {
+    const model = modelSelection === 'custom' ? customModelId.trim() : modelSelection;
+    if (!model) return;
+    setSavingModel(true);
+    try {
+      await botsApi.update(botId!, { model });
+      loadData();
+    } catch (err) {
+      console.error('Failed to save model:', err);
+    } finally {
+      setSavingModel(false);
+    }
   }
 
   if (loading) return <div className="text-center py-12 text-gray-500">Loading...</div>;
@@ -70,6 +105,56 @@ export default function BotDetail() {
           {!editing && (
             <button onClick={() => setEditing(true)} className="text-sm text-indigo-600 hover:text-indigo-500">Edit</button>
           )}
+        </div>
+      </div>
+
+      {/* Model selector */}
+      <div className="bg-white rounded-lg shadow p-6">
+        <h2 className="text-lg font-semibold mb-4">Model</h2>
+        <div className="space-y-3">
+          {MODEL_PRESETS.map((preset) => (
+            <label key={preset.value} className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="radio"
+                name="model"
+                value={preset.value}
+                checked={modelSelection === preset.value}
+                onChange={() => setModelSelection(preset.value)}
+                className="text-indigo-600 focus:ring-indigo-500"
+              />
+              <span className="text-sm text-gray-900">{preset.label}</span>
+              <span className="text-xs text-gray-400">{preset.value}</span>
+            </label>
+          ))}
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="radio"
+              name="model"
+              value="custom"
+              checked={modelSelection === 'custom'}
+              onChange={() => setModelSelection('custom')}
+              className="text-indigo-600 focus:ring-indigo-500"
+            />
+            <span className="text-sm text-gray-900">Custom</span>
+          </label>
+          {modelSelection === 'custom' && (
+            <input
+              type="text"
+              value={customModelId}
+              onChange={(e) => setCustomModelId(e.target.value)}
+              placeholder="Enter model ID..."
+              className="block w-full text-sm border rounded-md p-2 focus:outline-none focus:ring-1 focus:ring-indigo-500 ml-7"
+            />
+          )}
+          <div>
+            <button
+              onClick={saveModel}
+              disabled={savingModel || (modelSelection === 'custom' && !customModelId.trim())}
+              className="px-3 py-1 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {savingModel ? 'Saving...' : 'Save Model'}
+            </button>
+          </div>
         </div>
       </div>
 
