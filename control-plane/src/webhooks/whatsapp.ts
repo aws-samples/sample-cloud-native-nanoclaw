@@ -231,6 +231,7 @@ export const whatsappWebhook: FastifyPluginAsync = async (app) => {
                 groupJid,
                 userId: bot.userId,
                 messageId: msg.messageId,
+                content: msg.content,
                 channelType: 'whatsapp',
                 timestamp,
               };

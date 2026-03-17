@@ -158,7 +158,6 @@ describe('dispatch NO_REPLY handling', () => {
   const mockEnsureUser = vi.fn();
   const mockCheckAndAcquireAgentSlot = vi.fn();
   const mockReleaseAgentSlot = vi.fn();
-  const mockGetRecentMessages = vi.fn();
   const mockGetGroup = vi.fn();
   const mockGetTask = vi.fn();
   const mockGetCachedBot = vi.fn();
@@ -187,7 +186,6 @@ describe('dispatch NO_REPLY handling', () => {
     mockEnsureUser.mockReset();
     mockCheckAndAcquireAgentSlot.mockReset();
     mockReleaseAgentSlot.mockReset();
-    mockGetRecentMessages.mockReset();
     mockGetGroup.mockReset();
     mockGetTask.mockReset();
     mockGetCachedBot.mockReset();
@@ -198,7 +196,6 @@ describe('dispatch NO_REPLY handling', () => {
     mockEnsureUser.mockResolvedValue({ usageTokens: 0, quota: { maxMonthlyTokens: 100000, maxConcurrentAgents: 2 } });
     mockCheckAndAcquireAgentSlot.mockResolvedValue(true);
     mockReleaseAgentSlot.mockResolvedValue(undefined);
-    mockGetRecentMessages.mockResolvedValue([]);
     mockGetGroup.mockResolvedValue({ isGroup: false, channelType: 'telegram' });
     mockGetTask.mockResolvedValue({ status: 'active', prompt: 'Run daily check' });
     mockPutMessage.mockResolvedValue(undefined);
@@ -221,7 +218,7 @@ describe('dispatch NO_REPLY handling', () => {
 
     vi.doMock('../services/dynamo.js', () => ({
       getGroup: mockGetGroup,
-      getRecentMessages: mockGetRecentMessages,
+      getRecentMessages: vi.fn(),
       ensureUser: mockEnsureUser,
       putMessage: mockPutMessage,
       putSession: mockPutSession,
@@ -254,6 +251,7 @@ describe('dispatch NO_REPLY handling', () => {
       groupJid: 'tg:123',
       userId: 'user-1',
       messageId: 'msg-1',
+      content: 'Hello',
       channelType: 'telegram',
       timestamp: new Date().toISOString(),
     };
@@ -277,6 +275,7 @@ describe('dispatch NO_REPLY handling', () => {
       groupJid: 'tg:123',
       userId: 'user-1',
       messageId: 'msg-2',
+      content: '  NO_REPLY  \n',
       channelType: 'telegram',
       timestamp: new Date().toISOString(),
     };
@@ -314,6 +313,7 @@ describe('dispatch NO_REPLY handling', () => {
       groupJid: 'tg:123',
       userId: 'user-1',
       messageId: 'msg-3',
+      content: 'Tell me a joke',
       channelType: 'telegram',
       timestamp: new Date().toISOString(),
     };

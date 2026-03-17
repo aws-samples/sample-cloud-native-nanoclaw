@@ -161,6 +161,7 @@ export interface SqsInboundPayload {
   groupJid: string;
   userId: string;
   messageId: string;
+  content: string;
   channelType: ChannelType;
   timestamp: string;
   attachments?: Attachment[];

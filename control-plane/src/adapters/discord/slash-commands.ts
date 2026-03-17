@@ -185,6 +185,7 @@ async function handleAsk(
     groupJid,
     userId,
     messageId,
+    content: prompt,
     channelType: 'discord',
     timestamp,
     replyContext: {

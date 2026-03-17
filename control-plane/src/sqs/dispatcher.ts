@@ -7,7 +7,7 @@ import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
-import { formatMessages, formatOutbound } from '@clawbot/shared';
+import { formatOutbound } from '@clawbot/shared';
 import type {
   ChannelType,
   InvocationPayload,
@@ -20,7 +20,6 @@ import type {
 import { config } from '../config.js';
 import {
   getGroup,
-  getRecentMessages,
   ensureUser,
   putMessage,
   putSession,
@@ -101,25 +100,10 @@ async function dispatchMessage(
   }
 
   try {
-    // 4. Query recent messages (last 50, filter out bot messages for context)
-    const messages = await getRecentMessages(
-      payload.botId,
-      payload.groupJid,
-      50,
-    );
-    const contextMessages = messages.filter((m) => !m.isBotMessage);
+    // 4. Use message content from SQS payload (session history handled by Claude Code continue:true)
+    const prompt = payload.content;
 
-    // 5. Format into XML (preserving NanoClaw's format exactly)
-    const prompt = formatMessages(
-      contextMessages.map((m) => ({
-        senderName: m.senderName,
-        content: m.content,
-        timestamp: m.timestamp,
-      })),
-      'UTC', // TODO: get timezone from bot/user config
-    );
-
-    // 5b. Look up group record for isGroup flag
+    // 5. Look up group record for isGroup flag
     const group = await getGroup(payload.botId, payload.groupJid);
 
     // 6. Build invocation payload

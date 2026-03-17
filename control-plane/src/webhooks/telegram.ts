@@ -262,6 +262,7 @@ export const telegramWebhook: FastifyPluginAsync = async (app) => {
           groupJid,
           userId: bot.userId,
           messageId: msg.messageId,
+          content: msg.content,
           channelType: 'telegram',
           timestamp,
           ...(attachments.length > 0 && { attachments }),

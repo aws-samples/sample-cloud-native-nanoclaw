@@ -269,6 +269,7 @@ export const slackWebhook: FastifyPluginAsync = async (app) => {
           groupJid,
           userId: bot.userId,
           messageId: msg.messageId,
+          content: msg.content,
           channelType: 'slack',
           timestamp,
           ...(attachments.length > 0 && { attachments }),

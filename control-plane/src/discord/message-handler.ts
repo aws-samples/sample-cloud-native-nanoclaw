@@ -152,6 +152,7 @@ export async function handleDiscordMessage({
     groupJid,
     userId: bot.userId,
     messageId: msg.messageId,
+    content: msg.content,
     channelType: 'discord',
     timestamp,
     ...(attachments.length > 0 && { attachments }),
