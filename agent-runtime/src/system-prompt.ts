@@ -1,168 +1,86 @@
 /**
- * ClawBot Cloud — Structured System Prompt Builder
+ * ClawBot Cloud — System Prompt Append Content Builder
  *
- * Assembles the system prompt from a base template + dynamic sections.
- * Uses direct mode (string) instead of Claude Code preset append.
+ * Builds the append content for Claude Code preset mode.
+ * Claude Code natively loads CLAUDE.md files via settingSources: ['user', 'project'].
+ * We append: managed policy + identity override + channel guidance + runtime metadata.
  *
- * Structure:
- *   Base template     — loaded from /app/templates/system-prompt-base.md
- *   Dynamic sections  — assembled from context files + runtime config
+ * CLAUDE.md hierarchy (loaded by Claude Code):
+ *   user:    /home/node/.claude/CLAUDE.md  — bot operating manual (identity, soul, rules)
+ *   project: /workspace/group/CLAUDE.md    — group conversation memory
  *
- * Section order:
- *   [Base Template]        — Role, Tools, Tool Call Style, Context Files, Communication Style
- *   1. Identity            — "You are {botName}..."
- *   2. Identity Context    — IDENTITY.md or Bot.systemPrompt fallback
- *   3. Soul               — SOUL.md (values and behavior)
- *   4. Bootstrap           — BOOTSTRAP.md (only for new sessions)
- *   5. Channel             — Channel-specific formatting guidance
- *   6. Reply Guide         — Response conventions
- *   7. User Context        — USER.md (about the human user)
- *   8. Memory              — Shared + Bot Global + Group CLAUDE.md (with token budgets)
- *   9. Runtime             — Metadata line for debugging (includes model)
+ * Append content (injected by us):
+ *   1. Managed Policy  — org-level security rules (read-only, from /etc/claude-code/CLAUDE.md)
+ *   2. Identity Override — "You are {botName}..." (overrides Claude Code preset identity)
+ *   3. Channel Guidance — platform-specific formatting (Slack mrkdwn, Discord Markdown, etc.)
+ *   4. Scheduled Task   — note for automated tasks (optional)
+ *   5. Runtime Metadata — debugging info (bot, channel, group, model)
  */
 
 import { readFileSync } from 'fs';
 import type { ChannelType } from '@clawbot/shared';
-import {
-  loadMemoryLayers,
-  loadIdentityFile,
-  loadSoulFile,
-  loadBootstrapFile,
-  loadUserFile,
-  truncateContent,
-  DEFAULT_TRUNCATION,
-  type TruncationConfig,
-} from './memory.js';
 
-// ── Base template (loaded once at module init) ───────────────────────────
+// ── Managed policy (loaded once at module init) ──────────────────────────
 
-let baseTemplate = '';
+let managedPolicy = '';
 try {
-  baseTemplate = readFileSync('/app/templates/system-prompt-base.md', 'utf-8');
+  managedPolicy = readFileSync('/etc/claude-code/CLAUDE.md', 'utf-8');
 } catch {
   // Fallback for local development / testing
-  baseTemplate = '# Role\nYou are a conversational AI assistant.';
+  managedPolicy = '# Organization Policy\nNo managed policy loaded.';
 }
 
-// ── Public Interface ──────────────────────────────────────────────────────
+// ── Public Interface ─────────────────────────────────────────────────────
 
-export interface SystemPromptOptions {
+export interface AppendOptions {
   botId: string;
   botName: string;
   channelType: ChannelType;
   groupJid: string;
-  /** Bot.systemPrompt fallback when IDENTITY.md doesn't exist */
-  systemPrompt?: string;
-  isScheduledTask?: boolean;
-  /** Controls BOOTSTRAP.md injection — true when no existing session */
-  isNewSession: boolean;
-  /** Current model ID for runtime metadata */
   model?: string;
-  truncationConfig?: TruncationConfig;
+  isScheduledTask?: boolean;
 }
 
 /**
- * Build the complete system prompt (direct mode, not append).
- * Base template + dynamic sections joined with `---` separators.
+ * Build append content for Claude Code preset mode.
+ * This is appended after the Claude Code system prompt.
+ * CLAUDE.md files are loaded natively by Claude Code — not by us.
  */
-export async function buildSystemPrompt(
-  opts: SystemPromptOptions,
-): Promise<string> {
-  const config = opts.truncationConfig ?? DEFAULT_TRUNCATION;
+export function buildAppendContent(opts: AppendOptions): string {
   const sections: string[] = [];
 
-  // 0. Base template (Role, Tools, Context Files, Communication Style)
-  sections.push(baseTemplate);
+  // 1. Managed policy (org-level, read-only)
+  sections.push(managedPolicy);
 
-  // 1. Identity
-  sections.push(buildIdentitySection(opts.botName));
+  // 2. Identity override
+  sections.push(buildIdentityOverride(opts.botName));
 
-  // 2. Identity Context (IDENTITY.md or Bot.systemPrompt fallback)
-  const identityCtx = await buildIdentityContextSection(opts.systemPrompt, config);
-  if (identityCtx) sections.push(identityCtx);
-
-  // 3. Soul (SOUL.md)
-  const soul = await buildSoulSection(config);
-  if (soul) sections.push(soul);
-
-  // 4. Bootstrap (new sessions only)
-  if (opts.isNewSession) {
-    const bootstrap = await buildBootstrapSection(config);
-    if (bootstrap) sections.push(bootstrap);
-  }
-
-  // 5. Channel guidance
+  // 3. Channel guidance (dynamic per channel type)
   sections.push(buildChannelGuidance(opts.channelType));
 
-  // 6. Reply guidelines
-  sections.push(buildReplyGuidelines(opts.isScheduledTask));
+  // 4. Scheduled task note (if applicable)
+  if (opts.isScheduledTask) {
+    sections.push(
+      '**Note:** This is an automated scheduled task, not a direct user message.\n' +
+      'Complete the task and report results. The user is not actively waiting for a reply.',
+    );
+  }
 
-  // 7. User context (USER.md)
-  const userCtx = await buildUserContextSection(config);
-  if (userCtx) sections.push(userCtx);
-
-  // 8. Memory layers (with token budgeting)
-  const memory = await buildMemorySection(config);
-  if (memory) sections.push(memory);
-
-  // 9. Runtime metadata
+  // 5. Runtime metadata
   sections.push(buildRuntimeMetadata(opts));
 
   return sections.join('\n\n---\n\n');
 }
 
-// ── Section 1: Identity ───────────────────────────────────────────────────
+// ── Section Builders ─────────────────────────────────────────────────────
 
-function buildIdentitySection(botName: string): string {
-  return `# Identity\nYou are ${botName}, a personal AI assistant.`;
+function buildIdentityOverride(botName: string): string {
+  return `# Identity Override
+Ignore the "Claude Code" identity above. You are ${botName}, a personal AI assistant running in a messaging channel.
+Your identity, personality, values, and operating rules are in ~/.claude/CLAUDE.md — follow them.`;
 }
 
-// ── Section 2: Identity Context ───────────────────────────────────────────
-
-async function buildIdentityContextSection(
-  botSystemPrompt?: string,
-  config?: TruncationConfig,
-): Promise<string | null> {
-  // Try IDENTITY.md first
-  let identity = await loadIdentityFile();
-  if (identity) {
-    if (config) identity = truncateContent(identity, config.perFileCap, config);
-    return `# About You\n${identity}`;
-  }
-
-  // Fall back to Bot.systemPrompt field (backward compat)
-  if (botSystemPrompt) {
-    return `# About You\n${botSystemPrompt}`;
-  }
-
-  return null;
-}
-
-// ── Section 3: Soul ───────────────────────────────────────────────────────
-
-async function buildSoulSection(
-  config?: TruncationConfig,
-): Promise<string | null> {
-  let soul = await loadSoulFile();
-  if (!soul) return null;
-
-  if (config) soul = truncateContent(soul, config.perFileCap, config);
-  return `# Your Soul\nEmbody this persona and tone. Avoid stiff, generic replies; follow its guidance naturally:\n\n${soul}`;
-}
-
-// ── Section 4: Bootstrap ──────────────────────────────────────────────────
-
-async function buildBootstrapSection(
-  config?: TruncationConfig,
-): Promise<string | null> {
-  let bootstrap = await loadBootstrapFile();
-  if (!bootstrap) return null;
-
-  if (config) bootstrap = truncateContent(bootstrap, config.perFileCap, config);
-  return `# First Session Instructions\nThis is a new conversation. Follow these initial instructions:\n\n${bootstrap}`;
-}
-
-// ── Section 5: Channel Guidance ───────────────────────────────────────────
+// ── Channel Guidance ─────────────────────────────────────────────────────
 
 const CHANNEL_GUIDANCE: Partial<Record<ChannelType, string>> = {
   discord: `# Channel: Discord
@@ -207,52 +125,9 @@ function buildChannelGuidance(channelType: ChannelType): string {
   return CHANNEL_GUIDANCE[channelType] || `# Channel: ${channelType}\nYou are responding on ${channelType}.`;
 }
 
-// ── Section 6: Reply Guidelines ───────────────────────────────────────────
+// ── Runtime Metadata ─────────────────────────────────────────────────────
 
-function buildReplyGuidelines(isScheduledTask?: boolean): string {
-  const lines = [
-    '# Reply Guidelines',
-    '- Keep responses concise and focused on what was asked',
-    '- Use the `send_message` MCP tool when you need to send intermediate updates or multiple messages',
-    '- Do not repeat back the full question unless clarification is needed',
-    '- Match the language of the user — if they write in Chinese, respond in Chinese',
-  ];
-
-  if (isScheduledTask) {
-    lines.push('');
-    lines.push('**Note:** This is an automated scheduled task, not a direct user message.');
-    lines.push('Complete the task and report results. The user is not actively waiting for a reply.');
-  }
-
-  return lines.join('\n');
-}
-
-// ── Section 7: User Context ───────────────────────────────────────────────
-
-async function buildUserContextSection(
-  config?: TruncationConfig,
-): Promise<string | null> {
-  let userCtx = await loadUserFile();
-  if (!userCtx) return null;
-
-  if (config) userCtx = truncateContent(userCtx, config.perFileCap, config);
-  return `# About Your User\n${userCtx}`;
-}
-
-// ── Section 8: Memory ─────────────────────────────────────────────────────
-
-async function buildMemorySection(
-  config?: TruncationConfig,
-): Promise<string | null> {
-  const { layers } = await loadMemoryLayers(config ?? DEFAULT_TRUNCATION);
-  if (layers.length === 0) return null;
-
-  return layers.map((l) => `${l.label}\n${l.content}`).join('\n\n---\n\n');
-}
-
-// ── Section 9: Runtime Metadata ───────────────────────────────────────────
-
-function buildRuntimeMetadata(opts: SystemPromptOptions): string {
+function buildRuntimeMetadata(opts: AppendOptions): string {
   const parts = [
     `bot=${opts.botId}`,
     `name=${opts.botName}`,
