@@ -37,6 +37,15 @@ export async function handleDiscordMessage({
   let content = message.content;
   const hasAttachments = message.attachments.size > 0;
 
+  logger.info({
+    botId,
+    channelId: message.channelId,
+    contentLength: message.content.length,
+    attachmentCount: message.attachments.size,
+    attachmentNames: hasAttachments ? [...message.attachments.values()].map(a => a.name) : [],
+    embedCount: message.embeds?.length || 0,
+  }, 'Discord message details');
+
   if (!content.trim() && !hasAttachments) return;
 
   const channelId = message.channelId;
