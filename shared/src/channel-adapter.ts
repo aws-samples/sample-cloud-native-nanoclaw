@@ -17,6 +17,9 @@ export interface ReplyContext {
   discordMessageId?: string;
   // Slack-specific
   slackResponseUrl?: string;
+  // Feishu-specific
+  feishuChatId?: string;
+  feishuMessageId?: string;
 }
 
 // --- Reply Options ---

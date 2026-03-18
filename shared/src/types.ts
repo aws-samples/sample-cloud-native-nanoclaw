@@ -153,6 +153,8 @@ export interface SqsReplyContext {
   discordInteractionToken?: string;
   discordChannelId?: string;
   slackResponseUrl?: string;
+  feishuChatId?: string;
+  feishuMessageId?: string;
 }
 
 export interface SqsInboundPayload {

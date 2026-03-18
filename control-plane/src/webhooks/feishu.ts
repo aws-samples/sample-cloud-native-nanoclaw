@@ -400,6 +400,10 @@ export const feishuWebhook: FastifyPluginAsync = async (app) => {
           channelType: 'feishu',
           timestamp,
           ...(attachments.length > 0 && { attachments }),
+          replyContext: {
+            feishuChatId: chatId,
+            feishuMessageId: messageId,
+          },
         };
 
         await sqs.send(
