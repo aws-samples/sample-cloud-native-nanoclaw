@@ -202,8 +202,8 @@ export interface InvocationPayload {
 export interface MemoryPaths {
   /** S3 key for bot-level CLAUDE.md → /home/node/.claude/CLAUDE.md */
   botClaude: string;
-  /** S3 key for group-level CLAUDE.md → /workspace/group/CLAUDE.md */
-  groupClaude: string;
+  /** S3 prefix for group workspace → /workspace/group/ (full directory sync) */
+  groupPrefix: string;
   /** S3 prefix for learnings directory → /workspace/learnings/ */
   learnings?: string;
 }

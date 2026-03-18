@@ -7,14 +7,14 @@
  *
  * Layout:
  *   /home/node/.claude/           ← Claude Code session state + bot-level CLAUDE.md
- *   /workspace/group/             ← Group memory (CLAUDE.md) + conversations
+ *   /workspace/group/             ← Group workspace (CLAUDE.md, conversations/, .claude/, agent files)
  *   /workspace/learnings/         ← Learning journal
  */
 
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { existsSync } from 'fs';
 import { mkdir, readdir, readFile, writeFile } from 'fs/promises';
-import { join, dirname } from 'path';
+import { join, dirname, relative } from 'path';
 import type pino from 'pino';
 
 const WORKSPACE_BASE = '/workspace';
@@ -25,8 +25,8 @@ export interface SyncPaths {
   sessionPath: string;
   /** S3 key for bot-level CLAUDE.md → /home/node/.claude/CLAUDE.md */
   botClaude: string;
-  /** S3 key for group CLAUDE.md → /workspace/group/CLAUDE.md */
-  groupClaude: string;
+  /** S3 prefix for group workspace → /workspace/group/ (full directory sync) */
+  groupPrefix: string;
   /** S3 prefix for learnings → /workspace/learnings/ */
   learningsPrefix?: string;
 }
@@ -47,8 +47,8 @@ export async function syncFromS3(
   // 2. Download bot CLAUDE.md → /home/node/.claude/CLAUDE.md
   await downloadFile(s3, bucket, paths.botClaude, join(CLAUDE_DIR, 'CLAUDE.md'), logger);
 
-  // 3. Download group CLAUDE.md → /workspace/group/CLAUDE.md
-  await downloadFile(s3, bucket, paths.groupClaude, join(WORKSPACE_BASE, 'group', 'CLAUDE.md'), logger);
+  // 3. Download entire group workspace → /workspace/group/
+  await downloadDirectory(s3, bucket, paths.groupPrefix, join(WORKSPACE_BASE, 'group'), logger);
 
   // 4. Download learnings → /workspace/learnings/
   if (paths.learningsPrefix) {
@@ -72,15 +72,10 @@ export async function syncToS3(
   // 2. Upload bot CLAUDE.md from /home/node/.claude/CLAUDE.md → S3
   await uploadFile(s3, bucket, join(CLAUDE_DIR, 'CLAUDE.md'), paths.botClaude, logger);
 
-  // 3. Upload group CLAUDE.md from /workspace/group/CLAUDE.md → S3
-  await uploadFile(s3, bucket, join(WORKSPACE_BASE, 'group', 'CLAUDE.md'), paths.groupClaude, logger);
+  // 3. Upload entire group workspace → S3
+  await uploadDirectory(s3, bucket, join(WORKSPACE_BASE, 'group'), paths.groupPrefix, logger);
 
-  // 4. Upload group conversations directory (archived transcripts)
-  const conversationsDir = join(WORKSPACE_BASE, 'group', 'conversations');
-  const conversationsPrefix = paths.groupClaude.replace(/CLAUDE\.md$/, 'conversations/');
-  await uploadDirectory(s3, bucket, conversationsDir, conversationsPrefix, logger);
-
-  // 5. Upload learnings directory
+  // 4. Upload learnings directory
   if (paths.learningsPrefix) {
     await uploadDirectory(s3, bucket, join(WORKSPACE_BASE, 'learnings'), paths.learningsPrefix, logger);
   }
@@ -115,8 +110,8 @@ async function downloadFile(
     const resp = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
     if (resp.Body) {
       await mkdir(dirname(localPath), { recursive: true });
-      const content = await resp.Body.transformToString();
-      await writeFile(localPath, content, 'utf-8');
+      const bytes = await resp.Body.transformToByteArray();
+      await writeFile(localPath, Buffer.from(bytes));
       logger.debug({ key, localPath }, 'Downloaded file');
     }
   } catch (err: unknown) {
@@ -148,9 +143,9 @@ async function downloadDirectory(
 
     for (const obj of resp.Contents ?? []) {
       if (!obj.Key) continue;
-      const relativePath = obj.Key.slice(prefix.length);
-      if (!relativePath) continue;
-      await downloadFile(s3, bucket, obj.Key, join(localDir, relativePath), logger);
+      const rel = obj.Key.slice(prefix.length).replace(/^\/+/, '');
+      if (!rel) continue;
+      await downloadFile(s3, bucket, obj.Key, join(localDir, rel), logger);
     }
 
     continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
@@ -165,7 +160,7 @@ async function uploadFile(
   logger: pino.Logger,
 ): Promise<void> {
   try {
-    const content = await readFile(localPath, 'utf-8');
+    const content = await readFile(localPath);
     await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: content }));
     logger.debug({ key, localPath }, 'Uploaded file');
   } catch (err: unknown) {
@@ -189,8 +184,8 @@ async function uploadDirectory(
     for (const entry of entries) {
       if (!entry.isFile()) continue;
       const fullPath = join(entry.parentPath || entry.path, entry.name);
-      const relativePath = fullPath.slice(localDir.length);
-      await uploadFile(s3, bucket, fullPath, prefix + relativePath, logger);
+      const rel = relative(localDir, fullPath);
+      await uploadFile(s3, bucket, fullPath, prefix + rel, logger);
     }
   } catch (err: unknown) {
     if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'ENOENT') {

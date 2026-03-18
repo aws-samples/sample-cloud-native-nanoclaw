@@ -143,27 +143,52 @@ SQS_MESSAGES_ARN=$(aws cloudformation describe-stacks \
   --query "Stacks[0].Outputs[?OutputKey=='MessageQueueArn'].OutputValue" \
   --output text 2>/dev/null || echo "")
 
-# Check if runtime already exists (idempotent)
+# Resolve image digest for deterministic deploys
+IMAGE_TAG="${ECR_URI}/${ECR_AGENT_REPO}:latest"
+IMAGE_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE_TAG" 2>/dev/null \
+  | sed 's/.*@//' || echo "")
+if [ -n "$IMAGE_DIGEST" ]; then
+  CONTAINER_URI="${ECR_URI}/${ECR_AGENT_REPO}@${IMAGE_DIGEST}"
+else
+  CONTAINER_URI="$IMAGE_TAG"
+fi
+log "  Container URI: ${CONTAINER_URI}"
+
+ARTIFACT_JSON=$(jq -n --arg uri "$CONTAINER_URI" \
+  '{"containerConfiguration":{"containerUri":$uri}}')
+
+ENV_VARS_JSON=$(jq -n \
+  --arg region "$REGION" \
+  --arg scoped "$SCOPED_ROLE_ARN" \
+  --arg bucket "$DATA_BUCKET" \
+  --arg reply "$REPLY_QUEUE_URL" \
+  --arg tasks "$TASKS_TABLE" \
+  --arg scheduler "$SCHEDULER_ROLE_ARN" \
+  --arg sqsarn "$SQS_MESSAGES_ARN" \
+  '{AWS_REGION:$region,CLAUDE_CODE_USE_BEDROCK:"1",SCOPED_ROLE_ARN:$scoped,SESSION_BUCKET:$bucket,SQS_REPLIES_URL:$reply,TABLE_TASKS:$tasks,SCHEDULER_ROLE_ARN:$scheduler,SQS_MESSAGES_ARN:$sqsarn}')
+
+# Check if runtime already exists
 EXISTING_RUNTIME_ARN=""
-EXISTING_RUNTIMES=$(aws bedrock-agentcore-control list-agent-runtimes --region "$REGION" 2>/dev/null || echo '{"agentRuntimeSummaries":[]}')
-EXISTING_RUNTIME_ARN=$(echo "$EXISTING_RUNTIMES" | jq -r ".agentRuntimeSummaries[] | select(.agentRuntimeName==\"${AGENTCORE_NAME}\") | .agentRuntimeArn // empty" 2>/dev/null || echo "")
+EXISTING_RUNTIMES=$(aws bedrock-agentcore-control list-agent-runtimes --region "$REGION" 2>/dev/null || echo '{"agentRuntimes":[]}')
+EXISTING_RUNTIME_ARN=$(echo "$EXISTING_RUNTIMES" | jq -r ".agentRuntimes[] | select(.agentRuntimeName==\"${AGENTCORE_NAME}\") | .agentRuntimeArn // empty" 2>/dev/null || echo "")
 
 if [ -n "$EXISTING_RUNTIME_ARN" ]; then
-  log "  AgentCore runtime already exists: ${EXISTING_RUNTIME_ARN}"
+  log "  AgentCore runtime exists, updating: ${EXISTING_RUNTIME_ARN}"
   AGENTCORE_RUNTIME_ARN="$EXISTING_RUNTIME_ARN"
+  AGENTCORE_ID=$(echo "$AGENTCORE_RUNTIME_ARN" | awk -F'/' '{print $NF}')
+
+  UPDATE_RESULT=$(aws bedrock-agentcore-control update-agent-runtime \
+    --agent-runtime-id "$AGENTCORE_ID" \
+    --agent-runtime-artifact "$ARTIFACT_JSON" \
+    --role-arn "$AGENT_BASE_ROLE_ARN" \
+    --network-configuration '{"networkMode":"PUBLIC"}' \
+    --environment-variables "$ENV_VARS_JSON" \
+    --region "$REGION" 2>&1) || fail "Failed to update AgentCore runtime: $UPDATE_RESULT"
+
+  NEW_VERSION=$(echo "$UPDATE_RESULT" | jq -r '.agentRuntimeVersion // "unknown"')
+  log "  Updated to version: ${NEW_VERSION}"
 else
   log "  Creating AgentCore runtime: ${AGENTCORE_NAME}"
-  ARTIFACT_JSON=$(jq -n --arg uri "${ECR_URI}/${ECR_AGENT_REPO}:latest" \
-    '{"containerConfiguration":{"containerUri":$uri}}')
-
-  ENV_VARS_JSON=$(jq -n \
-    --arg scoped "$SCOPED_ROLE_ARN" \
-    --arg bucket "$DATA_BUCKET" \
-    --arg reply "$REPLY_QUEUE_URL" \
-    --arg tasks "$TASKS_TABLE" \
-    --arg scheduler "$SCHEDULER_ROLE_ARN" \
-    --arg sqsarn "$SQS_MESSAGES_ARN" \
-    '{CLAUDE_CODE_USE_BEDROCK:"1",SCOPED_ROLE_ARN:$scoped,SESSION_BUCKET:$bucket,SQS_REPLIES_URL:$reply,TABLE_TASKS:$tasks,SCHEDULER_ROLE_ARN:$scheduler,SQS_MESSAGES_ARN:$sqsarn}')
 
   CREATE_RESULT=$(aws bedrock-agentcore-control create-agent-runtime \
     --agent-runtime-name "$AGENTCORE_NAME" \
@@ -205,6 +230,26 @@ if [ "$STATUS" != "READY" ]; then
   fail "AgentCore runtime did not reach READY state within 10 minutes"
 fi
 
+# ── Step 9b: Stop warm sessions (force cold start with new image) ─────────────
+
+log "Step 9b: Stopping warm AgentCore sessions"
+SESSIONS_TABLE="${PREFIX}-${STAGE}-sessions"
+ACTIVE_SESSIONS=$(aws dynamodb scan --table-name "$SESSIONS_TABLE" --region "$REGION" \
+  --projection-expression "agentcoreSessionId" \
+  --filter-expression "#s = :v" \
+  --expression-attribute-names '{"#s":"status"}' \
+  --expression-attribute-values '{":v":{"S":"active"}}' \
+  --query 'Items[].agentcoreSessionId.S' --output json 2>/dev/null || echo '[]')
+
+STOPPED=0
+for sid in $(echo "$ACTIVE_SESSIONS" | jq -r '.[]'); do
+  aws bedrock-agentcore stop-runtime-session \
+    --runtime-session-id "$sid" \
+    --agent-runtime-arn "$AGENTCORE_RUNTIME_ARN" \
+    --region "$REGION" >/dev/null 2>&1 && STOPPED=$((STOPPED+1)) || true
+done
+log "  Stopped ${STOPPED} warm session(s)"
+
 # ── Step 10: Update ECS task with AGENTCORE_RUNTIME_ARN ──────────────────────
 
 log "Step 10: Updating ECS task environment with AgentCore runtime ARN"
@@ -239,9 +284,12 @@ if [ -n "$ECS_SERVICE" ] && [ "$ECS_SERVICE" != "None" ]; then
     runtimePlatform: .taskDefinition.runtimePlatform
   }' | jq --argjson containers "$UPDATED_CONTAINERS" '. + {containerDefinitions: $containers}')
 
-  NEW_TASK_DEF_ARN=$(echo "$NEW_TASK_DEF" | \
-    aws ecs register-task-definition --cli-input-json file:///dev/stdin \
+  TASK_DEF_TMP=$(mktemp)
+  echo "$NEW_TASK_DEF" > "$TASK_DEF_TMP"
+  NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+    --cli-input-json "file://${TASK_DEF_TMP}" \
     --region "$REGION" --query 'taskDefinition.taskDefinitionArn' --output text)
+  rm -f "$TASK_DEF_TMP"
 
   log "  New task definition: ${NEW_TASK_DEF_ARN}"
 else

@@ -87,7 +87,7 @@ async function _handleInvocation(
   const syncPaths: SyncPaths = {
     sessionPath,
     botClaude: memoryPaths.botClaude,
-    groupClaude: memoryPaths.groupClaude,
+    groupPrefix: memoryPaths.groupPrefix,
     learningsPrefix: memoryPaths.learnings,
   };
 

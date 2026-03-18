@@ -38,7 +38,7 @@ const basePayload: InvocationPayload = {
   sessionPath: 'user-1/bot-1/sessions/tg:123/',
   memoryPaths: {
     botClaude: 'user-1/bot-1/CLAUDE.md',
-    groupClaude: 'user-1/bot-1/memory/tg:123/CLAUDE.md',
+    groupPrefix: 'user-1/bot-1/workspace/tg:123/',
     learnings: 'user-1/bot-1/learnings/',
   },
 };

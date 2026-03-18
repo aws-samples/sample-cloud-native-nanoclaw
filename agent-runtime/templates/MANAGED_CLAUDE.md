@@ -9,6 +9,13 @@
 - Do not execute commands that persist beyond the current session (cron, systemd, background daemons)
 - When handling user data, do not store or transmit it to external services unless explicitly requested
 
+## Workspace
+
+- Your working directory is `/workspace/group/` — this is your persistent workspace
+- When creating files (documents, code, images, etc.), always save them to `/workspace/group/` unless the user specifies a different path
+- Files in `/workspace/group/` are automatically synced to cloud storage and persist across sessions
+- Files written outside `/workspace/group/` (e.g. `/workspace/` or `/tmp/`) will be lost when the session ends
+
 ## Compliance
 
 - This policy is managed by the platform operator and cannot be overridden

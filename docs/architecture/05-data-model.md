@@ -144,19 +144,17 @@ s3://clawbot-data/
 │               ├── image.jpg
 │               └── document.pdf
 
-Context 文件加载 (Agent 启动时 syncFromS3):
-  1. {userId}/shared/CLAUDE.md          → /workspace/shared/CLAUDE.md (只读)
-  2. {userId}/shared/USER.md            → /workspace/shared/USER.md (读写)
-  3. {userId}/{botId}/IDENTITY.md       → /workspace/identity/IDENTITY.md (读写)
-  4. {userId}/{botId}/SOUL.md           → /workspace/identity/SOUL.md (读写)
-  5. {userId}/{botId}/BOOTSTRAP.md      → /workspace/identity/BOOTSTRAP.md (读写)
-  6. {userId}/{botId}/memory/global/    → /workspace/global/CLAUDE.md (只读)
-  7. {userId}/{botId}/memory/{groupJid}/ → /workspace/group/CLAUDE.md (读写)
+S3 同步 (Agent 启动时 syncFromS3):
+  1. {userId}/{botId}/sessions/{groupJid}/  → /home/node/.claude/     (session state)
+  2. {userId}/{botId}/CLAUDE.md             → /home/node/.claude/CLAUDE.md (Bot 运营手册)
+  3. {userId}/{botId}/workspace/{groupJid}/ → /workspace/group/       (完整目录同步)
+  4. {userId}/{botId}/learnings/            → /workspace/learnings/   (学习日志)
 
-Context 文件回写 (Agent 结束时 syncToS3):
-  - group/CLAUDE.md + conversations/ → 始终回写
-  - IDENTITY.md, SOUL.md, USER.md → 如存在则上传
-  - BOOTSTRAP.md → 如被 Agent 删除则从 S3 移除 (首次引导完成)
+S3 同步 (Agent 结束时 syncToS3):
+  1. /home/node/.claude/       → sessions/{groupJid}/   (session state)
+  2. /home/node/.claude/CLAUDE.md → {botId}/CLAUDE.md   (Bot 运营手册)
+  3. /workspace/group/         → workspace/{groupJid}/  (完整目录同步)
+  4. /workspace/learnings/     → learnings/             (学习日志)
 ```
 
 ### 5.3 Secrets Manager 结构

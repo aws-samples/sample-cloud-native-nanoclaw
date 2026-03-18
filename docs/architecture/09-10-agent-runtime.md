@@ -220,7 +220,7 @@ export interface InvocationPayload {
     sessionPath: string;      // S3: {userId}/{botId}/sessions/{groupJid}/
     memoryPaths: {
       botClaude: string;      // S3: {userId}/{botId}/CLAUDE.md
-      groupClaude: string;    // S3: {userId}/{botId}/memory/{gid}/CLAUDE.md
+      groupPrefix: string;    // S3: {userId}/{botId}/workspace/{gid}/ (full directory sync)
       learnings?: string;     // S3: {userId}/{botId}/learnings/
     };
     model?: string;           // Bedrock model ID (默认 claude-sonnet-4-6)
@@ -287,7 +287,7 @@ export async function handleInvocation(payload: InvocationPayload): Promise<Invo
     await syncFromS3(scopedClients.s3, SESSION_BUCKET, {
       sessionPath,                           // → /home/node/.claude/
       botClaude,                             // → /home/node/.claude/CLAUDE.md
-      groupClaude,                           // → /workspace/group/CLAUDE.md
+      groupPrefix,                           // → /workspace/group/ (full directory)
       learningsPrefix,                       // → /workspace/learnings/
     });
 
@@ -542,7 +542,7 @@ const BUCKET = process.env.CLAWBOT_S3_BUCKET!;
 interface SyncPaths {
   sessionPath: string;      // S3: {userId}/{botId}/sessions/{groupJid}/
   botClaude: string;        // S3: {userId}/{botId}/CLAUDE.md
-  groupClaude: string;      // S3: {userId}/{botId}/memory/{groupJid}/CLAUDE.md
+  groupPrefix: string;      // S3: {userId}/{botId}/workspace/{groupJid}/ (full directory sync)
   learningsPrefix?: string; // S3: {userId}/{botId}/learnings/
 }
 
@@ -556,8 +556,8 @@ export async function syncFromS3(s3: S3Client, bucket: string, paths: SyncPaths)
   await downloadDirectory(s3, bucket, paths.sessionPath, '/home/node/.claude/');
   // 2. 恢复 Bot CLAUDE.md (运营手册, Claude Code user 级加载)
   await downloadFile(s3, bucket, paths.botClaude, '/home/node/.claude/CLAUDE.md');
-  // 3. 恢复 Group CLAUDE.md (对话记忆, Claude Code project 级加载)
-  await downloadFile(s3, bucket, paths.groupClaude, '/workspace/group/CLAUDE.md');
+  // 3. 恢复 Group 工作区 (CLAUDE.md, conversations/, .claude/, agent files)
+  await downloadDirectory(s3, bucket, paths.groupPrefix, '/workspace/group/');
   // 4. 恢复 learnings
   if (paths.learningsPrefix) {
     await downloadDirectory(s3, bucket, paths.learningsPrefix, '/workspace/learnings/');
@@ -573,11 +573,9 @@ export async function syncToS3(s3: S3Client, bucket: string, paths: SyncPaths): 
   await uploadDirectory(s3, bucket, '/home/node/.claude/', paths.sessionPath);
   // 2. 回写 Bot CLAUDE.md (Agent 可能更新了身份/灵魂/用户信息)
   await uploadFile(s3, bucket, '/home/node/.claude/CLAUDE.md', paths.botClaude);
-  // 3. 回写 Group CLAUDE.md
-  await uploadFile(s3, bucket, '/workspace/group/CLAUDE.md', paths.groupClaude);
-  // 4. 回写 conversations 归档
-  await uploadDirectory(s3, bucket, '/workspace/group/conversations/', conversationsPrefix);
-  // 5. 回写 learnings
+  // 3. 回写 Group 工作区 (CLAUDE.md, conversations/, .claude/, agent files)
+  await uploadDirectory(s3, bucket, '/workspace/group/', paths.groupPrefix);
+  // 4. 回写 learnings
   if (paths.learningsPrefix) {
     await uploadDirectory(s3, bucket, '/workspace/learnings/', paths.learningsPrefix);
   }

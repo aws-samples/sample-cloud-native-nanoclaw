@@ -119,7 +119,7 @@ async function dispatchMessage(
       sessionPath: `${payload.userId}/${payload.botId}/sessions/${payload.groupJid}/`,
       memoryPaths: {
         botClaude: `${payload.userId}/${payload.botId}/CLAUDE.md`,
-        groupClaude: `${payload.userId}/${payload.botId}/memory/${payload.groupJid}/CLAUDE.md`,
+        groupPrefix: `${payload.userId}/${payload.botId}/workspace/${payload.groupJid}/`,
         learnings: `${payload.userId}/${payload.botId}/learnings/`,
       },
       isGroupChat: group?.isGroup,
@@ -253,7 +253,7 @@ async function dispatchTask(
     sessionPath: `${payload.userId}/${payload.botId}/sessions/${payload.groupJid}/`,
     memoryPaths: {
       botClaude: `${payload.userId}/${payload.botId}/CLAUDE.md`,
-      groupClaude: `${payload.userId}/${payload.botId}/memory/${payload.groupJid}/CLAUDE.md`,
+      groupPrefix: `${payload.userId}/${payload.botId}/workspace/${payload.groupJid}/`,
       learnings: `${payload.userId}/${payload.botId}/learnings/`,
     },
     isGroupChat: group?.isGroup,

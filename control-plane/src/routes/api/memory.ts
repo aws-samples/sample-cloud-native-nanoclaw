@@ -104,7 +104,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
       if (!bot) {
         return reply.status(404).send({ error: 'Bot not found' });
       }
-      const key = `${request.userId}/${botId}/memory/${groupJid}/CLAUDE.md`;
+      const key = `${request.userId}/${botId}/workspace/${groupJid}/CLAUDE.md`;
       const content = await readMemory(key);
       return { content };
     },
@@ -119,7 +119,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ error: 'Bot not found' });
       }
       const { content } = putMemorySchema.parse(request.body);
-      const key = `${request.userId}/${botId}/memory/${groupJid}/CLAUDE.md`;
+      const key = `${request.userId}/${botId}/workspace/${groupJid}/CLAUDE.md`;
       await writeMemory(key, content);
       return { content };
     },

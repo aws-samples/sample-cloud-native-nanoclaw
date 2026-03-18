@@ -41,13 +41,34 @@ Claude Code 通过 `settingSources: ['user', 'project']` 原生加载两级 CLAU
 ```
 {userId}/
 ├── shared/
-│   └── CLAUDE.md                    ← User 级：跨 Bot 共享记忆（保留，未来用途）
+│   └── CLAUDE.md                       ← User 级：跨 Bot 共享记忆（保留，未来用途）
 └── {botId}/
-    ├── CLAUDE.md                    ← Bot 级：运营手册 → /home/node/.claude/CLAUDE.md
-    ├── learnings/                   ← Bot 级：学习日志
-    └── memory/
-        └── {groupJid}/
-            └── CLAUDE.md            ← Group 级：对话记忆 → /workspace/group/CLAUDE.md
+    ├── CLAUDE.md                       ← Bot 运营手册（botClaude，单文件同步）
+    │                                      → /home/node/.claude/CLAUDE.md
+    ├── learnings/                      ← 学习日志（目录同步）
+    │   └── LEARNINGS.md                   → /workspace/learnings/
+    ├── sessions/
+    │   └── {groupJid}/                 ← Claude Code session state（目录同步）
+    │       ├── CLAUDE.md                  → /home/node/.claude/（session 附带的副本）
+    │       ├── backups/                   → /home/node/.claude/backups/
+    │       ├── plugins/                   → /home/node/.claude/plugins/
+    │       ├── skills/                    → /home/node/.claude/skills/
+    │       └── projects/                  → /home/node/.claude/projects/
+    └── workspace/
+        └── {groupJid}/                 ← Group 工作区（目录同步）
+            ├── CLAUDE.md                  → /workspace/group/CLAUDE.md（project 级记忆）
+            ├── conversations/             → /workspace/group/conversations/（对话归档）
+            ├── .claude/                   → /workspace/group/.claude/（project memory）
+            └── ...                        → Agent 创建的其他文件
+
+同步顺序（syncFromS3）:
+  1. sessions/{gid}/  → /home/node/.claude/     （session state 整体恢复）
+  2. botClaude        → /home/node/.claude/CLAUDE.md  （Bot 运营手册覆写 session 中的副本）
+  3. workspace/{gid}/ → /workspace/group/       （Group 工作区整体恢复）
+  4. learnings/       → /workspace/learnings/    （学习日志）
+
+注意：session 目录会包含 ~/.claude/CLAUDE.md 的副本（因为整体上传）。
+syncFromS3 中 botClaude 在 session 之后下载，确保 Bot 运营手册始终是权威版本。
 ```
 
 | 文件 | 层级 | 容器路径 | 加载方式 | 用途 |
@@ -201,8 +222,8 @@ systemPrompt: {
 ```
 1. Control Plane (dispatcher.ts)
    │  构建 InvocationPayload，包含:
-   │  - prompt: XML 格式的消息历史
-   │  - memoryPaths: { botClaude, groupClaude, learnings }
+   │  - prompt: 消息内容（SQS payload 直传）
+   │  - memoryPaths: { botClaude, groupPrefix, learnings }
    │
    ▼
 2. AgentCore invocation → Agent Runtime (agent.ts)
@@ -210,14 +231,12 @@ systemPrompt: {
    ├─ syncFromS3():
    │    ├─ 下载 session 目录 → /home/node/.claude/
    │    ├─ 下载 botClaude    → /home/node/.claude/CLAUDE.md
-   │    ├─ 下载 groupClaude  → /workspace/group/CLAUDE.md
+   │    ├─ 下载 groupPrefix  → /workspace/group/ (full directory)
    │    └─ 下载 learnings/   → /workspace/learnings/
    │
    ├─ 模板检查: ~/.claude/CLAUDE.md 不存在?
    │            → 复制 BOT_CLAUDE.md（合并的身份/灵魂/用户/规则模板）
    │            总是复制 CODING_REFERENCE.md → /workspace/reference/
-   │
-   ├─ detectExistingSession(): 查找已有 session ID
    │
    ├─ buildAppendContent():
    │    ├─ managed policy    → /etc/claude-code/CLAUDE.md
@@ -229,16 +248,16 @@ systemPrompt: {
    ├─ query({
    │    prompt,
    │    systemPrompt: { type: 'preset', preset: 'claude_code', append },
+   │    continue: true,
    │    settingSources: ['user', 'project'],
    │  })
-   │    └─ Claude Code 原生加载 CLAUDE.md
-   │    └─ Agent 可用 Write/Edit 修改 ~/.claude/CLAUDE.md, group/CLAUDE.md
+   │    └─ Claude Code 原生加载 CLAUDE.md（user + project 两级）
+   │    └─ Agent 可用 Write/Edit 修改文件，syncToS3 回写
    │
    └─ syncToS3():
         ├─ 上传 session 目录
         ├─ 上传 ~/.claude/CLAUDE.md → botClaude S3 key
-        ├─ 上传 group/CLAUDE.md → groupClaude S3 key
-        ├─ 上传 conversations/ → 归档的对话记录
+        ├─ 上传 /workspace/group/ → groupPrefix (full directory)
         └─ 上传 learnings/ → 学习日志
 ```
 
@@ -276,13 +295,13 @@ systemPrompt: {
 | 文件 | 职责 |
 |------|------|
 | `agent-runtime/src/system-prompt.ts` | Append content builder：`buildAppendContent()` + channel guidance + identity override |
-| `agent-runtime/src/session.ts` | S3 同步：SyncPaths（sessionPath, botClaude, groupClaude, learnings） |
+| `agent-runtime/src/session.ts` | S3 同步：SyncPaths（sessionPath, botClaude, groupPrefix, learnings） |
 | `agent-runtime/src/agent.ts` | 入口：模板复制、调用 builder、传递给 Claude SDK query()（preset append 模式） |
 | `agent-runtime/templates/BOT_CLAUDE.md` | 合并的 Bot 运营手册模板：身份、灵魂、用户、规则、记忆管理 |
 | `agent-runtime/templates/MANAGED_CLAUDE.md` | 组织级安全策略 → Dockerfile COPY → `/etc/claude-code/CLAUDE.md` |
 | `agent-runtime/templates/CODING_REFERENCE.md` | 编码参考指南 → /workspace/reference/ |
 | `control-plane/src/routes/api/memory.ts` | REST API：3 种 CLAUDE.md 文件的 GET/PUT |
-| `shared/src/types.ts` | MemoryPaths 接口：`{ botClaude, groupClaude, learnings }` |
+| `shared/src/types.ts` | MemoryPaths 接口：`{ botClaude, groupPrefix, learnings }` |
 
 > **已删除**：`memory.ts`（token 预算/截断逻辑）、`system-prompt-base.md`（直接模式基础模板）。
 > Claude Code 原生处理 CLAUDE.md 加载和 token 管理。
