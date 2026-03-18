@@ -33,6 +33,7 @@ export function stopReplyConsumer(): void {
 
 async function replyLoop(logger: Logger): Promise<void> {
   const sqs = new SQSClient({ region: config.region });
+  const s3 = new S3Client({ region: config.region });
 
   logger.info({ queueUrl: config.queues.replies }, 'Reply consumer started');
 
@@ -81,15 +82,18 @@ async function replyLoop(logger: Logger): Promise<void> {
           };
 
           if (payload.type === 'file_reply') {
-            const s3 = new S3Client({ region: config.region });
             const resp = await s3.send(
               new GetObjectCommand({
                 Bucket: config.s3Bucket,
                 Key: payload.s3Key,
               }),
             );
+            if (!resp.Body) {
+              logger.error({ s3Key: payload.s3Key }, 'S3 file body is empty or missing, skipping');
+              continue;
+            }
             const fileBuffer = Buffer.from(
-              await resp.Body!.transformToByteArray(),
+              await resp.Body.transformToByteArray(),
             );
 
             if (adapter.sendFile) {

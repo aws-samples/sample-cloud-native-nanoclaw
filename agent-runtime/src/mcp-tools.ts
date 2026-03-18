@@ -14,7 +14,7 @@
  *   update_task    → DynamoDB update + update EventBridge schedule
  */
 
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
@@ -32,7 +32,7 @@ import {
 } from '@aws-sdk/client-scheduler';
 import { CronExpressionParser } from 'cron-parser';
 import type { ScopedClients } from './scoped-credentials.js';
-import type { ScheduledTask, SqsReplyPayload, SqsFileReplyPayload, ChannelType } from '@clawbot/shared';
+import type { ScheduledTask, SqsTextReplyPayload, SqsFileReplyPayload, ChannelType } from '@clawbot/shared';
 
 const REPLY_QUEUE_URL = process.env.SQS_REPLIES_URL || '';
 const TASKS_TABLE = process.env.TABLE_TASKS || '';
@@ -59,7 +59,7 @@ export async function sendMessage(
   text: string,
   sender?: string,
 ): Promise<void> {
-  const payload: SqsReplyPayload = {
+  const payload: SqsTextReplyPayload = {
     type: 'reply',
     botId: ctx.botId,
     groupJid: ctx.groupJid,
@@ -92,8 +92,8 @@ export async function sendFile(
   filePath: string,
   caption?: string,
 ): Promise<void> {
-  // 1. Validate path is under /workspace/group/
-  const resolved = path.resolve(filePath);
+  // 1. Validate path is under /workspace/group/ (resolve symlinks for security)
+  const resolved = await realpath(filePath);
   if (!resolved.startsWith('/workspace/group/')) {
     throw new Error('File must be under /workspace/group/');
   }

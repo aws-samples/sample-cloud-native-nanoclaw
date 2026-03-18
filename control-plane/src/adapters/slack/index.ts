@@ -97,26 +97,38 @@ export class SlackAdapter extends BaseChannelAdapter {
         return;
       }
 
-      const form = new FormData();
-      form.append('file', new Blob([file], { type: mimeType }), fileName);
-      form.append('filename', fileName);
-      form.append('channel_id', chatId);
-      if (caption) form.append('initial_comment', caption);
+      const authHeader = { Authorization: `Bearer ${creds.botToken}` };
 
-      const resp = await fetch('https://slack.com/api/files.uploadV2', {
+      // Step 1: Get presigned upload URL
+      const urlResp = await fetch('https://slack.com/api/files.getUploadURLExternal', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${creds.botToken}` },
-        body: form,
+        headers: { ...authHeader, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ filename: fileName, length: String(file.length) }),
       });
-
-      if (!resp.ok) {
-        const body = await resp.text();
-        throw new Error(`Slack files.uploadV2 failed: ${resp.status} — ${body}`);
+      const urlResult = (await urlResp.json()) as { ok: boolean; upload_url?: string; file_id?: string; error?: string };
+      if (!urlResult.ok || !urlResult.upload_url || !urlResult.file_id) {
+        throw new Error(`Slack getUploadURLExternal failed: ${urlResult.error || 'missing url/file_id'}`);
       }
 
-      const result = (await resp.json()) as { ok: boolean; error?: string };
-      if (!result.ok) {
-        throw new Error(`Slack files.uploadV2 error: ${result.error}`);
+      // Step 2: Upload file bytes to presigned URL
+      await fetch(urlResult.upload_url, {
+        method: 'POST',
+        body: file,
+      });
+
+      // Step 3: Complete upload and share to channel
+      const completeResp = await fetch('https://slack.com/api/files.completeUploadExternal', {
+        method: 'POST',
+        headers: { ...authHeader, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          files: [{ id: urlResult.file_id, title: fileName }],
+          channel_id: chatId,
+          initial_comment: caption || undefined,
+        }),
+      });
+      const completeResult = (await completeResp.json()) as { ok: boolean; error?: string };
+      if (!completeResult.ok) {
+        throw new Error(`Slack completeUploadExternal failed: ${completeResult.error}`);
       }
 
       this.logger.info(
