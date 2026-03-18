@@ -58,6 +58,9 @@ export interface ChannelAdapter {
   // Send reply (required — all adapters must implement)
   sendReply(ctx: ReplyContext, text: string, opts?: ReplyOptions): Promise<void>;
 
+  // Send file (optional — adapters that support file uploads)
+  sendFile?(ctx: ReplyContext, file: Buffer, fileName: string, mimeType: string, caption?: string): Promise<void>;
+
   // Slash commands (optional — only Discord implements initially)
   registerCommands?(botId: string, commands: BotCommand[]): Promise<void>;
   unregisterCommands?(botId: string): Promise<void>;

@@ -79,7 +79,15 @@ async function replyLoop(logger: Logger): Promise<void> {
             channelType: payload.channelType as ChannelType,
           };
 
-          await adapter.sendReply(ctx, payload.text);
+          if (payload.type === 'file_reply') {
+            // TODO(#46): download from S3 and call adapter.sendFile
+            logger.warn(
+              { botId: payload.botId, groupJid: payload.groupJid },
+              'file_reply not yet implemented, skipping',
+            );
+          } else {
+            await adapter.sendReply(ctx, payload.text);
+          }
 
           // Delete message on success
           await sqs.send(

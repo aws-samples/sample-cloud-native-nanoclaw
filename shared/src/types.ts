@@ -219,7 +219,7 @@ export interface InvocationResult {
 
 // --- SQS Reply Payload (agent → control plane) ---
 
-export interface SqsReplyPayload {
+export interface SqsTextReplyPayload {
   type: 'reply';
   botId: string;
   groupJid: string;
@@ -227,6 +227,21 @@ export interface SqsReplyPayload {
   text: string;
   timestamp: string;
 }
+
+export interface SqsFileReplyPayload {
+  type: 'file_reply';
+  botId: string;
+  groupJid: string;
+  channelType: ChannelType;
+  s3Key: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  caption?: string;
+  timestamp: string;
+}
+
+export type SqsReplyPayload = SqsTextReplyPayload | SqsFileReplyPayload;
 
 // --- API Request/Response Types ---
 
