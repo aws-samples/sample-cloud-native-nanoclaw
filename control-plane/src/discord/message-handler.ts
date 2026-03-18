@@ -1,6 +1,6 @@
-// Discord Gateway — MESSAGE_CREATE handler
-// Converts discord.js Message objects into the same DynamoDB + SQS flow
-// used by all other channel webhooks.
+// Discord — Shared message handler
+// Used by both Gateway adapter (messageCreate event) and legacy webhook fallback.
+// Single source of truth for: attachment processing, trigger check, DynamoDB store, SQS dispatch.
 
 import type { Message as DjsMessage, TextChannel } from 'discord.js';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
@@ -18,11 +18,12 @@ import type { Attachment, Message, SqsInboundPayload } from '@clawbot/shared';
 
 const sqs = new SQSClient({ region: config.region });
 
-interface HandleMessageOpts {
+export interface HandleMessageOpts {
   message: DjsMessage;
   botId: string;
   botDiscordId: string;
   logger: pino.Logger;
+  onProcessing?: (groupJid: string) => void;
 }
 
 export async function handleDiscordMessage({
@@ -30,21 +31,13 @@ export async function handleDiscordMessage({
   botId,
   botDiscordId,
   logger,
+  onProcessing,
 }: HandleMessageOpts): Promise<void> {
   // Ignore bot messages (including own)
   if (message.author.bot) return;
 
   let content = message.content;
   const hasAttachments = message.attachments.size > 0;
-
-  logger.info({
-    botId,
-    channelId: message.channelId,
-    contentLength: message.content.length,
-    attachmentCount: message.attachments.size,
-    attachmentNames: hasAttachments ? [...message.attachments.values()].map(a => a.name) : [],
-    embedCount: message.embeds?.length || 0,
-  }, 'Discord message details');
 
   if (!content.trim() && !hasAttachments) return;
 
@@ -92,11 +85,25 @@ export async function handleDiscordMessage({
     }
   }
 
+  logger.info(
+    {
+      botId,
+      channelId,
+      contentLength: content.length,
+      attachmentCount: message.attachments.size,
+      attachmentNames: hasAttachments ? [...message.attachments.values()].map(a => a.name) : [],
+    },
+    'Discord message processing',
+  );
+
+  // Signal that validation passed — caller can start typing indicator etc.
+  onProcessing?.(groupJid);
+
   // Process attachments
   const attachments: Attachment[] = [];
   for (const [, da] of message.attachments) {
     const ct = da.contentType || 'application/octet-stream';
-    logger.info({ botId, name: da.name, contentType: da.contentType, size: da.size, url: da.url?.slice(0, 80) }, 'Processing Discord attachment');
+    logger.info({ botId, name: da.name, contentType: da.contentType, size: da.size }, 'Processing Discord attachment');
     if (ct.startsWith('audio/') || ct.startsWith('video/')) {
       content += '\n[Voice/Video message — not yet supported]';
       continue;
@@ -166,6 +173,9 @@ export async function handleDiscordMessage({
     channelType: 'discord',
     timestamp,
     ...(attachments.length > 0 && { attachments }),
+    replyContext: {
+      discordChannelId: channelId,
+    },
   };
 
   await sqs.send(
@@ -179,6 +189,6 @@ export async function handleDiscordMessage({
 
   logger.info(
     { botId, groupJid, messageId: msg.messageId, channelId },
-    'Discord message dispatched to SQS (via Gateway)',
+    'Discord message dispatched to SQS',
   );
 }

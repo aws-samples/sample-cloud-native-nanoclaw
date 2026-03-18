@@ -27,34 +27,28 @@ import {
 } from '@aws-sdk/client-secrets-manager';
 import type pino from 'pino';
 import type { ReplyContext, ReplyOptions } from '@clawbot/shared/channel-adapter';
-import type { ChannelConfig, Message, SqsInboundPayload } from '@clawbot/shared';
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
+import type { ChannelConfig } from '@clawbot/shared';
 import { BaseChannelAdapter } from '../base.js';
 import { config } from '../../config.js';
-import {
-  getChannelsByBot,
-  putMessage,
-  getOrCreateGroup,
-  listGroups,
-  getUser,
-} from '../../services/dynamo.js';
-import { getCachedBot, getChannelCredentials } from '../../services/cached-lookups.js';
-import { downloadAndStore } from '../../services/attachments.js';
+import { getChannelsByBot } from '../../services/dynamo.js';
+import { getChannelCredentials } from '../../services/cached-lookups.js';
 import { formatDiscordReply } from './embeds.js';
 import {
   registerGuildCommands,
   unregisterGuildCommands,
   handleSlashCommand,
 } from './slash-commands.js';
+import { handleDiscordMessage } from '../../discord/message-handler.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const LOCK_TABLE = config.tables.sessions;
 const LOCK_PK = '__system__';
 const LOCK_SK = 'discord-gateway-leader';
-const LOCK_TTL_S = 60;
-const RENEW_INTERVAL_MS = 30_000;
-const POLL_INTERVAL_MS = 30_000;
+const LOCK_TTL_S = 30;
+const RENEW_INTERVAL_MS = 15_000;
+const POLL_INTERVAL_MS = 15_000;
+const POLL_INITIAL_DELAY_MS = 5_000;
 const TYPING_INTERVAL_MS = 9_000;
 
 const INSTANCE_ID =
@@ -67,7 +61,7 @@ const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: config.region }),
 );
 const secretsMgr = new SecretsManagerClient({ region: config.region });
-const sqs = new SQSClient({ region: config.region });
+
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -88,6 +82,7 @@ export class DiscordAdapter extends BaseChannelAdapter {
   private client: Client | null = null;
   private renewTimer: ReturnType<typeof setInterval> | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private initialPollTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
   private activeBots = new Map<string, BotGatewayInfo>();
 
@@ -131,6 +126,10 @@ export class DiscordAdapter extends BaseChannelAdapter {
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = null;
+    }
+    if (this.initialPollTimer) {
+      clearTimeout(this.initialPollTimer);
+      this.initialPollTimer = null;
     }
 
     // Clear all typing indicators
@@ -659,165 +658,21 @@ export class DiscordAdapter extends BaseChannelAdapter {
     this.startRenewLoop();
   }
 
-  // ── Private: Message Handler ───────────────────────────────────────────
+  // ── Private: Message Handler (delegates to shared handler) ────────────
 
   private async handleMessage(message: DjsMessage): Promise<void> {
-    if (message.author.bot) return;
-
-    let content = message.content;
-    const hasAttachments = message.attachments.size > 0;
-    if (!content.trim() && !hasAttachments) return;
-
     const botInfo = this.findBotForMessage(message);
     if (!botInfo) return;
 
     const botId = botInfo.channel.botId;
-    const channelId = message.channelId;
-    const groupJid = `dc:${channelId}`;
-    const messageId = `dc-${message.id}`;
-    const isGroup = !!message.guild;
-    const senderName =
-      message.member?.displayName ||
-      message.author.displayName ||
-      message.author.username;
 
-    let chatName: string;
-    if (message.guild) {
-      const textChannel = message.channel as TextChannel;
-      chatName = `${message.guild.name} #${textChannel.name}`;
-    } else {
-      chatName = senderName;
-    }
-
-    const bot = await getCachedBot(botId);
-    if (!bot || bot.status !== 'active') return;
-
-    // @mention translation
-    const isBotMentioned =
-      message.mentions.users.has(botInfo.botDiscordId) ||
-      content.includes(`<@${botInfo.botDiscordId}>`) ||
-      content.includes(`<@!${botInfo.botDiscordId}>`);
-
-    if (isBotMentioned) {
-      content = content
-        .replace(new RegExp(`<@!?${botInfo.botDiscordId}>`, 'g'), '')
-        .trim();
-    }
-
-    // Trigger check: DMs always trigger; guild messages require @mention or pattern
-    if (isGroup && !isBotMentioned) {
-      const pattern = bot.triggerPattern;
-      if (!pattern) return;
-      try {
-        if (!new RegExp(pattern, 'i').test(content)) return;
-      } catch {
-        if (!content.toLowerCase().includes(pattern.toLowerCase())) return;
-      }
-    }
-
-    this.logger.info(
-      {
-        author: message.author.tag,
-        channelId,
-        guildId: message.guildId,
-        isGroup,
-        isBotMentioned,
-      },
-      'Discord message processing',
-    );
-
-    // Start typing indicator
-    this.startTyping(botId, groupJid, channelId);
-
-    // Process attachments
-    const attachments: import('@clawbot/shared').Attachment[] = [];
-    for (const [, da] of message.attachments) {
-      const ct = da.contentType || 'application/octet-stream';
-      this.logger.info({ botId, name: da.name, contentType: da.contentType, size: da.size }, 'Processing Discord attachment');
-      if (ct.startsWith('audio/') || ct.startsWith('video/')) {
-        content += '\n[Voice/Video message — not yet supported]';
-        continue;
-      }
-      try {
-        const att = await downloadAndStore(
-          bot.userId,
-          botId,
-          messageId,
-          da.url,
-          da.name,
-          ct,
-        );
-        if (att) attachments.push(att);
-      } catch (err) {
-        this.logger.warn({ err, botId, name: da.name }, 'Failed to download attachment');
-      }
-    }
-
-    // Append attachment info to content so agent knows what files are available
-    if (attachments.length > 0) {
-      const fileDescs = attachments.map((a) => `- ${a.fileName || a.s3Key.split('/').pop()} (${a.mimeType})`).join('\n');
-      content += `\n[Attached files — saved to /workspace/group/attachments/]\n${fileDescs}`;
-    }
-
-    // Group quota check
-    const existingGroups = await listGroups(botId);
-    const isNewGroup = !existingGroups.find((g) => g.groupJid === groupJid);
-    if (isNewGroup) {
-      const owner = await getUser(bot.userId);
-      const maxGroups = owner?.quota?.maxGroupsPerBot ?? 10;
-      if (existingGroups.length >= maxGroups) {
-        this.logger.warn({ botId, maxGroups }, 'Group limit reached');
-        return;
-      }
-    }
-
-    await getOrCreateGroup(botId, groupJid, chatName, 'discord', isGroup);
-
-    const timestamp = message.createdAt.toISOString();
-    const msg: Message = {
+    await handleDiscordMessage({
+      message,
       botId,
-      groupJid,
-      timestamp,
-      messageId,
-      sender: message.author.id,
-      senderName,
-      content,
-      isFromMe: false,
-      isBotMessage: false,
-      channelType: 'discord',
-      ttl: Math.floor(Date.now() / 1000) + 90 * 24 * 3600,
-      ...(attachments.length > 0 && { attachments }),
-    };
-    await putMessage(msg);
-
-    const sqsPayload: SqsInboundPayload = {
-      type: 'inbound_message',
-      botId,
-      groupJid,
-      userId: bot.userId,
-      messageId: msg.messageId,
-      content: msg.content,
-      channelType: 'discord',
-      timestamp,
-      ...(attachments.length > 0 && { attachments }),
-      replyContext: {
-        discordChannelId: channelId,
-      },
-    };
-
-    await sqs.send(
-      new SendMessageCommand({
-        QueueUrl: config.queues.messages,
-        MessageBody: JSON.stringify(sqsPayload),
-        MessageGroupId: `${botId}#${groupJid}`,
-        MessageDeduplicationId: msg.messageId,
-      }),
-    );
-
-    this.logger.info(
-      { botId, groupJid, messageId: msg.messageId },
-      'Discord message dispatched to SQS',
-    );
+      botDiscordId: botInfo.botDiscordId,
+      logger: this.logger,
+      onProcessing: (groupJid) => this.startTyping(botId, groupJid, message.channelId),
+    });
   }
 
   // ── Private: Standby / Renew ───────────────────────────────────────────
@@ -842,7 +697,7 @@ export class DiscordAdapter extends BaseChannelAdapter {
   }
 
   private startStandbyPoll(discordChannels: ChannelConfig[]): void {
-    this.pollTimer = setInterval(async () => {
+    const poll = async () => {
       if (this.stopped) return;
       const expired = await this.isLockExpired();
       if (expired) {
@@ -859,7 +714,11 @@ export class DiscordAdapter extends BaseChannelAdapter {
           this.startStandbyPoll(discordChannels);
         }
       }
-    }, POLL_INTERVAL_MS);
+    };
+    // First check quickly (covers rolling update where old leader just died)
+    this.initialPollTimer = setTimeout(poll, POLL_INITIAL_DELAY_MS);
+    // Then regular interval
+    this.pollTimer = setInterval(poll, POLL_INTERVAL_MS);
   }
 
   // ── Private: Helpers ───────────────────────────────────────────────────

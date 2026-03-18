@@ -13,8 +13,8 @@
 | [7](#7-旧-discord-gateway-manager-死代码清理) | 旧 Discord gateway-manager 死代码清理 | 待清理 | 低 |
 | [8](#8-model-selection-后续优化) | Model selection 后续优化 | 待实现 | 低 |
 | [9](#9-dispatcher-getgroup-热路径优化) | Dispatcher getGroup 热路径优化 | 待优化 | 中 |
-| [10](#10-discord-message-handler-重复代码合并) | Discord message handler 重复代码合并 | 待重构 | 高 |
-| [11](#11-discord-gateway-leader-election-滚动更新问题) | Discord Gateway leader election 滚动更新问题 | 待修复 | 高 |
+| [10](#10-discord-message-handler-重复代码合并) | ~~Discord message handler 重复代码合并~~ | 已完成 | — |
+| [11](#11-discord-gateway-leader-election-滚动更新问题) | ~~Discord Gateway leader election 滚动更新问题~~ | 已完成 | — |
 | [12](#12-file-attachments-后续优化) | File attachments 后续优化 | 待实现 | 中 |
 
 ---
@@ -208,9 +208,9 @@ https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permission
 
 ---
 
-## 10. Discord message handler 重复代码合并
+## 10. ~~Discord message handler 重复代码合并~~
 
-**状态**: 待重构
+**状态**: 已完成（2026-03-18）
 **日期**: 2026-03-18
 **优先级**: 高
 
@@ -229,9 +229,9 @@ Discord 消息处理逻辑有两份独立的副本：
 
 ---
 
-## 11. Discord Gateway leader election 滚动更新问题
+## 11. ~~Discord Gateway leader election 滚动更新问题~~
 
-**状态**: 待修复
+**状态**: 已完成（2026-03-18）
 **日期**: 2026-03-18
 **优先级**: 高
 
