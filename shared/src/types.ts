@@ -199,6 +199,23 @@ export interface InvocationPayload {
   isScheduledTask?: boolean;
   isGroupChat?: boolean;
   maxTurns?: number;
+  /** Feishu/Lark credentials + tool config (present when channelType is 'feishu') */
+  feishu?: FeishuInvocationConfig;
+}
+
+/** Feishu/Lark config passed to agent runtime for MCP tool registration. */
+export interface FeishuInvocationConfig {
+  /** Secrets Manager ARN holding the Lark app credentials */
+  credentialSecretArn: string;
+  /** Lark API domain: 'feishu' (default) or 'lark' */
+  domain?: string;
+  /** Which tool categories to enable */
+  tools: {
+    doc: boolean;
+    wiki: boolean;
+    drive: boolean;
+    perm: boolean;
+  };
 }
 
 export interface MemoryPaths {

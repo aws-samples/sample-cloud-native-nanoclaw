@@ -10,6 +10,7 @@ import {
 import { formatOutbound } from '@clawbot/shared';
 import type {
   ChannelType,
+  FeishuInvocationConfig,
   InvocationPayload,
   InvocationResult,
   SqsInboundPayload,
@@ -27,6 +28,7 @@ import {
   updateUserUsage,
   checkAndAcquireAgentSlot,
   releaseAgentSlot,
+  getChannelsByBot,
 } from '../services/dynamo.js';
 import { getCachedBot } from '../services/cached-lookups.js';
 import { getRegistry } from '../adapters/registry.js';
@@ -38,6 +40,44 @@ import type { Logger } from 'pino';
 /** Check if agent result is a silent NO_REPLY (nothing to send) */
 function isSilentReply(result: string | null | undefined): boolean {
   return result?.trim() === 'NO_REPLY';
+}
+
+/**
+ * Build FeishuInvocationConfig when the channel is 'feishu'.
+ * Looks up the feishu channel for this bot and returns the credential ARN
+ * and tool config so the agent runtime can load secrets and register tools.
+ */
+async function buildFeishuConfig(
+  botId: string,
+  channelType: ChannelType,
+  logger: Logger,
+): Promise<FeishuInvocationConfig | undefined> {
+  if (channelType !== 'feishu') return undefined;
+
+  try {
+    const channels = await getChannelsByBot(botId);
+    const feishuChannel = channels.find((c) => c.channelType === 'feishu');
+    if (!feishuChannel) return undefined;
+
+    // Tool config from channel config (defaults: all enabled)
+    const toolConfig = (feishuChannel.config?.tools ?? {}) as Partial<
+      Record<'doc' | 'wiki' | 'drive' | 'perm', boolean>
+    >;
+
+    return {
+      credentialSecretArn: feishuChannel.credentialSecretArn,
+      domain: (feishuChannel.config?.domain as string) ?? 'feishu',
+      tools: {
+        doc: toolConfig.doc !== false,
+        wiki: toolConfig.wiki !== false,
+        drive: toolConfig.drive !== false,
+        perm: toolConfig.perm !== false,
+      },
+    };
+  } catch (err) {
+    logger.warn({ err, botId }, 'Failed to build feishu config for invocation');
+    return undefined;
+  }
 }
 
 // ── Main dispatch entry point ───────────────────────────────────────────────
@@ -106,7 +146,10 @@ async function dispatchMessage(
     // 5. Look up group record for isGroup flag
     const group = await getGroup(payload.botId, payload.groupJid);
 
-    // 6. Build invocation payload
+    // 6. Build feishu config (if channel is feishu, includes credential ARN + tool config)
+    const feishuConfig = await buildFeishuConfig(payload.botId, payload.channelType, logger);
+
+    // 7. Build invocation payload
     const invocationPayload: InvocationPayload = {
       botId: payload.botId,
       botName: bot.name,
@@ -126,6 +169,7 @@ async function dispatchMessage(
       ...(payload.attachments && payload.attachments.length > 0 && {
         attachments: payload.attachments,
       }),
+      ...(feishuConfig && { feishu: feishuConfig }),
     };
 
     logger.info(
@@ -133,10 +177,10 @@ async function dispatchMessage(
       'Invoking agent',
     );
 
-    // 7. Invoke AgentCore
+    // 8. Invoke AgentCore
     const result = await invokeAgent(invocationPayload, logger);
 
-    // 8. Store bot reply in DynamoDB
+    // 9. Store bot reply in DynamoDB
     if (result.status === 'success' && result.result) {
       if (isSilentReply(result.result)) {
         logger.info({ botId: payload.botId, groupJid: payload.groupJid }, 'Agent returned NO_REPLY, skipping response');
@@ -240,6 +284,9 @@ async function dispatchTask(
     'Dispatching scheduled task',
   );
 
+  // Build feishu config for scheduled tasks too
+  const feishuConfig = await buildFeishuConfig(payload.botId, channelType, logger);
+
   const invocationPayload: InvocationPayload = {
     botId: payload.botId,
     botName: bot.name,
@@ -257,6 +304,7 @@ async function dispatchTask(
       learnings: `${payload.userId}/${payload.botId}/learnings/`,
     },
     isGroupChat: group?.isGroup,
+    ...(feishuConfig && { feishu: feishuConfig }),
   };
 
   const result = await invokeAgent(invocationPayload, logger);

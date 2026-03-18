@@ -25,6 +25,10 @@ import { fileURLToPath } from 'url';
 import { query, type HookCallback, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import type { S3Client } from '@aws-sdk/client-s3';
+import {
+  SecretsManagerClient,
+  GetSecretValueCommand,
+} from '@aws-sdk/client-secrets-manager';
 import type pino from 'pino';
 import type { InvocationPayload, InvocationResult, Attachment } from '@clawbot/shared';
 import { syncFromS3, syncToS3, type SyncPaths } from './session.js';
@@ -34,6 +38,7 @@ import { setBusy, setIdle } from './server.js';
 
 const SESSION_BUCKET = process.env.SESSION_BUCKET || '';
 const DEFAULT_MODEL = 'global.anthropic.claude-sonnet-4-6';
+const secretsManager = new SecretsManagerClient({});
 
 // Session switch detection — track which bot+group we last served
 let currentSessionKey: string | undefined;
@@ -45,6 +50,56 @@ async function cleanLocalWorkspace(): Promise<void> {
   }
 }
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ---------------------------------------------------------------------------
+// Feishu credential resolution
+// ---------------------------------------------------------------------------
+
+interface FeishuMcpEnv {
+  FEISHU_APP_ID: string;
+  FEISHU_APP_SECRET: string;
+  FEISHU_DOMAIN: string;
+  FEISHU_TOOLS_DOC: string;
+  FEISHU_TOOLS_WIKI: string;
+  FEISHU_TOOLS_DRIVE: string;
+  FEISHU_TOOLS_PERM: string;
+}
+
+/**
+ * Resolve Feishu credentials from Secrets Manager and return env vars
+ * for the MCP server subprocess.  Returns null if feishu config is absent.
+ */
+async function resolveFeishuEnv(
+  payload: InvocationPayload,
+  logger: pino.Logger,
+): Promise<FeishuMcpEnv | null> {
+  if (!payload.feishu) return null;
+
+  try {
+    const secret = await secretsManager.send(
+      new GetSecretValueCommand({ SecretId: payload.feishu.credentialSecretArn }),
+    );
+    const creds = JSON.parse(secret.SecretString || '{}') as Record<string, string>;
+
+    if (!creds.appId || !creds.appSecret) {
+      logger.warn({ botId: payload.botId }, 'Feishu secret missing appId/appSecret');
+      return null;
+    }
+
+    return {
+      FEISHU_APP_ID: creds.appId,
+      FEISHU_APP_SECRET: creds.appSecret,
+      FEISHU_DOMAIN: payload.feishu.domain ?? 'feishu',
+      FEISHU_TOOLS_DOC: payload.feishu.tools.doc ? '1' : '0',
+      FEISHU_TOOLS_WIKI: payload.feishu.tools.wiki ? '1' : '0',
+      FEISHU_TOOLS_DRIVE: payload.feishu.tools.drive ? '1' : '0',
+      FEISHU_TOOLS_PERM: payload.feishu.tools.perm ? '1' : '0',
+    };
+  } catch (err) {
+    logger.warn({ err, botId: payload.botId }, 'Failed to resolve feishu credentials');
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Main invocation handler
@@ -141,7 +196,10 @@ async function _handleInvocation(
   // 7. Resolve MCP server path (mcp-server.js in same dist directory)
   const mcpServerPath = path.join(__dirname, 'mcp-server.js');
 
-  // 7. Run Claude Agent SDK query
+  // 7b. Resolve feishu credentials from Secrets Manager (if applicable)
+  const feishuEnv = await resolveFeishuEnv(payload, logger);
+
+  // 8. Run Claude Agent SDK query
   logger.info('Starting agent query');
   const result = await runAgentQuery({
     prompt: agentPrompt,
@@ -153,6 +211,7 @@ async function _handleInvocation(
     groupJid,
     userId,
     payload,
+    feishuEnv,
     logger,
   });
 
@@ -182,6 +241,7 @@ interface QueryParams {
   groupJid: string;
   userId: string;
   payload: InvocationPayload;
+  feishuEnv: FeishuMcpEnv | null;
   logger: pino.Logger;
 }
 
@@ -268,6 +328,8 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
               TABLE_TASKS: process.env.TABLE_TASKS || '',
               SCHEDULER_ROLE_ARN: process.env.SCHEDULER_ROLE_ARN || '',
               SQS_MESSAGES_ARN: process.env.SQS_MESSAGES_ARN || '',
+              // Feishu/Lark tool credentials (conditionally set)
+              ...(params.feishuEnv ?? {}),
             },
           },
         },

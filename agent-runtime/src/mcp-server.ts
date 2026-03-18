@@ -12,6 +12,10 @@
  *   CLAWBOT_BOT_ID, CLAWBOT_BOT_NAME, CLAWBOT_GROUP_JID,
  *   CLAWBOT_USER_ID, CLAWBOT_CHANNEL_TYPE,
  *   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN  (scoped)
+ *
+ * Feishu tool env vars (optional, set when channel is 'feishu'):
+ *   FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_DOMAIN,
+ *   FEISHU_TOOLS_DOC, FEISHU_TOOLS_WIKI, FEISHU_TOOLS_DRIVE, FEISHU_TOOLS_PERM
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -33,6 +37,7 @@ import {
   type McpToolContext,
 } from './mcp-tools.js';
 import { getScopedClients } from './scoped-credentials.js';
+import { registerFeishuTools } from './feishu-tools/index.js';
 import type { ChannelType } from '@clawbot/shared';
 
 // Build tool context from environment (cached — userId/botId don't change within an invocation)
@@ -261,6 +266,27 @@ server.tool(
     };
   },
 );
+
+// --- Feishu/Lark tools (conditional — only when credentials are provided) ---
+const feishuAppId = process.env.FEISHU_APP_ID;
+const feishuAppSecret = process.env.FEISHU_APP_SECRET;
+
+if (feishuAppId && feishuAppSecret) {
+  await registerFeishuTools(
+    server,
+    {
+      appId: feishuAppId,
+      appSecret: feishuAppSecret,
+      domain: process.env.FEISHU_DOMAIN,
+    },
+    {
+      doc: process.env.FEISHU_TOOLS_DOC === '1',
+      wiki: process.env.FEISHU_TOOLS_WIKI === '1',
+      drive: process.env.FEISHU_TOOLS_DRIVE === '1',
+      perm: process.env.FEISHU_TOOLS_PERM === '1',
+    },
+  );
+}
 
 // Start the stdio transport
 const transport = new StdioServerTransport();
