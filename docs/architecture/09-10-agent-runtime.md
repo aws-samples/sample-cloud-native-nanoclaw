@@ -64,7 +64,7 @@ clawbot-agent 容器 (ARM64, node:22-slim)
 │   ├── query() — 流式消息处理
 │   ├── MessageStream — 保持 AsyncIterable 开启 (支持 Agent Teams)
 │   ├── Hooks: PreCompact → 归档对话到 S3
-│   └── CLAUDE_CODE_USE_BEDROCK=1 → Bedrock Claude (IAM Role)
+│   └── CLAUDE_CODE_USE_BEDROCK=1/0 → Bedrock (IAM Role) 或 Anthropic API (API Key)
 │
 ├── MCP Server (nanoclawbot, stdio 传输)
 │   ├── send_message     → SQS 回复队列 (中间消息即时送达)
@@ -223,7 +223,10 @@ export interface InvocationPayload {
       groupPrefix: string;    // S3: {userId}/{botId}/workspace/{gid}/ (full directory sync)
       learnings?: string;     // S3: {userId}/{botId}/learnings/
     };
-    model?: string;           // Bedrock model ID (默认 claude-sonnet-4-6)
+    model?: string;           // Model ID (Bedrock 格式或 Anthropic API 格式)
+    modelProvider?: ModelProvider; // 'bedrock' (默认) | 'anthropic-api'
+    anthropicApiKey?: string;  // Anthropic API key (从 Secrets Manager 解析)
+    anthropicBaseUrl?: string; // 自定义 API endpoint (代理/兼容 API)
     attachments?: Attachment[];  // 多媒体附件 (Webhook 预上传到 S3)
     isScheduledTask?: boolean;
     isGroupChat?: boolean;
@@ -338,7 +341,14 @@ export async function handleInvocation(payload: InvocationPayload): Promise<Invo
           'mcp__nanoclawbot__*',
         ],
         maxTurns: payload.maxTurns,
-        env: { ...process.env, CLAUDE_CODE_USE_BEDROCK: '1' },
+        env: {
+          ...process.env,
+          CLAUDE_CODE_USE_BEDROCK: payload.modelProvider === 'anthropic-api' ? '0' : '1',
+          ...(payload.modelProvider === 'anthropic-api' && {
+            ANTHROPIC_API_KEY: payload.anthropicApiKey,
+            ANTHROPIC_BASE_URL: payload.anthropicBaseUrl,
+          }),
+        },
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         // settingSources already set above

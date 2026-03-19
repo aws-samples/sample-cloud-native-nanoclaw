@@ -36,7 +36,8 @@ active_agents: 1,                 # 当前活跃 Agent 数 (实时)
 PK: user_id    SK: bot_id
 ─────────────────────────
 name, description, system_prompt, status (active/paused/deleted),
-trigger_pattern, container_config (JSON), created_at, updated_at
+trigger_pattern, model, model_provider ('bedrock'|'anthropic-api'),
+container_config (JSON), created_at, updated_at
 
 GSI: bot_id-index
   PK: bot_id  → 用于 Webhook 路由 (通过 bot_id 查 Bot)

@@ -65,7 +65,7 @@ web-console (standalone — talks to control-plane via REST)
 - **control-plane** (`@clawbot/control-plane`) — Fastify HTTP server on ECS Fargate. Handles webhook ingestion (Telegram/Slack), Discord Gateway (discord.js with leader election), Feishu Gateway (Lark SDK WSClient with leader election), REST API for the web console (JWT-authed via Cognito, including admin APIs), SQS FIFO message dispatching to AgentCore, SQS reply consumption via Channel Adapter Registry, channel health checking, and native CLAUDE.md memory management (bot-level + group-level).
 - **agent-runtime** (`@clawbot/agent-runtime`) — Runs inside AgentCore microVMs. Wraps Claude Agent SDK with MCP tools (send_message, schedule_task, etc.). Manages S3 session sync, native CLAUDE.md memory (via Claude Code settingSources), and STS ABAC scoped credentials. Exposes `/invocations` and `/ping` endpoints.
 - **infra** (`@clawbot/infra`) — AWS CDK (TypeScript). 6 stacks: Foundation (VPC, S3, DynamoDB, SQS, ECR), Auth (Cognito), Agent (IAM ABAC roles), ControlPlane (ALB, ECS, WAF), Frontend (CloudFront + S3), Monitoring (CloudWatch).
-- **web-console** (`@clawbot/web-console`) — React 19 SPA with Vite, TailwindCSS, AWS Amplify for Cognito auth. Pages: Login, Dashboard, BotDetail, ChannelSetup, Messages, Tasks, MemoryEditor (3 tabs: Shared/BotMemory/GroupMemory), Admin UserList/UserDetail.
+- **web-console** (`@clawbot/web-console`) — React 19 SPA with Vite, TailwindCSS, AWS Amplify for Cognito auth. Pages: Login, Dashboard, BotDetail, ChannelSetup, Messages, Tasks, MemoryEditor (3 tabs: Shared/BotMemory/GroupMemory), Settings (Anthropic API provider config), Admin UserList/UserDetail.
 
 ### Message flow
 
@@ -80,14 +80,14 @@ SQS FIFO provides per-group message ordering with cross-group parallelism. Disco
 - Cognito JWT on all `/api/*` routes
 - Per-channel webhook signature verification (Telegram secret token, Discord Ed25519, Slack HMAC-SHA256)
 - ABAC via STS SessionTags — agents can only access their owner's S3 paths and DynamoDB records
-- Channel tokens in Secrets Manager, never exposed to agents
+- Channel tokens and Anthropic API keys in Secrets Manager, never exposed to agents
 - Fargate in private subnets, WAF rate limiting
 
 ### Data layer
 
 - **DynamoDB** — 7 tables for Users, Bots, Channels, Messages, Tasks, Sessions, Groups
 - **S3** — Session state and CLAUDE.md memory files
-- **Secrets Manager** — Channel API tokens (Telegram, Discord, Slack, Feishu)
+- **Secrets Manager** — Channel API tokens (Telegram, Discord, Slack, Feishu), per-user Anthropic API keys
 - **EventBridge Scheduler** — Scheduled tasks → SQS → Agent
 
 ## Key Libraries
