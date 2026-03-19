@@ -31,7 +31,6 @@ import {
   resumeTask,
   cancelTask,
   updateTask,
-  validateCron,
   validateInterval,
   validateOnce,
   type McpToolContext,
@@ -109,23 +108,26 @@ server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference.
 
-CONTEXT MODE - Choose based on task type:
+CONTEXT MODE:
 \u2022 "group": Task runs in the group's conversation context, with access to chat history.
 \u2022 "isolated": Task runs in a fresh session with no conversation history.
 
-SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
-\u2022 cron: MUST use standard 5-field format: "minute hour day-of-month month day-of-week"
-  Do NOT use 6-field AWS cron, "?" wildcards, or seconds field.
+SCHEDULE VALUE FORMAT:
+\u2022 cron: AWS EventBridge 6-field format: "minute hour day-of-month month day-of-week year"
+  IMPORTANT RULES:
+  - day-of-month and day-of-week CANNOT both be * — use ? for the one you don't care about
+  - Use ? as a wildcard for "any" in day-of-month OR day-of-week (not both)
+  - Year is usually * (every year)
   Examples:
-    "0 8 * * *"     = daily at 8:00
-    "0 9 * * 1-5"   = weekdays at 9:00
-    "*/30 * * * *"   = every 30 minutes
-    "0 0 1 * *"     = first day of month at midnight
-  Day-of-week: 0=Sunday, 1=Monday ... 6=Saturday
+    "20 23 * * ? *"   = daily at 23:20 UTC
+    "0 8 * * ? *"     = daily at 8:00 UTC
+    "0 9 ? * 2-6 *"   = weekdays (Mon-Fri) at 9:00 UTC (1=SUN, 2=MON ... 7=SAT)
+    "*/30 * * * ? *"  = every 30 minutes
+    "0 0 1 * ? *"     = first day of month at midnight
 \u2022 interval: Milliseconds between runs (min 60000). Examples: "300000" (5 min), "3600000" (1 hour)
 \u2022 once: Local time WITHOUT "Z" suffix. Example: "2026-02-01T15:30:00"
 
-IMPORTANT: Only call this tool ONCE per task. If it fails, read the error message and fix — do not retry with random format variations.`,
+If the schedule expression is invalid, AWS will return an error — read it and correct the format.`,
   {
     prompt: z
       .string()
@@ -140,7 +142,7 @@ IMPORTANT: Only call this tool ONCE per task. If it fails, read the error messag
     schedule_value: z
       .string()
       .describe(
-        'cron: 5-field only, e.g. "0 8 * * *" (no ? or 6-field) | interval: milliseconds e.g. "300000" | once: local time e.g. "2026-02-01T15:30:00" (no Z!)',
+        'cron: AWS 6-field e.g. "0 8 * * ? *" (use ? for day-of-week or day-of-month) | interval: milliseconds e.g. "300000" | once: local time e.g. "2026-02-01T15:30:00" (no Z!)',
       ),
     context_mode: z
       .enum(['group', 'isolated'])
@@ -148,35 +150,36 @@ IMPORTANT: Only call this tool ONCE per task. If it fails, read the error messag
       .describe('group=runs with chat history, isolated=fresh session'),
   },
   async (args) => {
-    // Validate schedule value
-    let validationError: string | null = null;
-    if (args.schedule_type === 'cron') {
-      validationError = validateCron(args.schedule_value);
-    } else if (args.schedule_type === 'interval') {
-      validationError = validateInterval(args.schedule_value);
+    // Validate interval and once locally (simple checks); cron is validated by AWS EventBridge
+    if (args.schedule_type === 'interval') {
+      const err = validateInterval(args.schedule_value);
+      if (err) return { content: [{ type: 'text' as const, text: err }], isError: true };
     } else if (args.schedule_type === 'once') {
-      validationError = validateOnce(args.schedule_value);
-    }
-    if (validationError) {
-      return { content: [{ type: 'text' as const, text: validationError }], isError: true };
+      const err = validateOnce(args.schedule_value);
+      if (err) return { content: [{ type: 'text' as const, text: err }], isError: true };
     }
 
-    const ctx = await buildContext();
-    const taskId = await scheduleTask(
-      ctx,
-      args.prompt,
-      args.schedule_type,
-      args.schedule_value,
-      args.context_mode,
-    );
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: `Task ${taskId} scheduled: ${args.schedule_type} - ${args.schedule_value}`,
-        },
-      ],
-    };
+    try {
+      const ctx = await buildContext();
+      const taskId = await scheduleTask(
+        ctx,
+        args.prompt,
+        args.schedule_type,
+        args.schedule_value,
+        args.context_mode,
+      );
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Task ${taskId} scheduled: ${args.schedule_type} - ${args.schedule_value}`,
+          },
+        ],
+      };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: 'text' as const, text: `Failed to create schedule: ${message}` }], isError: true };
+    }
   },
 );
 
@@ -243,7 +246,7 @@ server.tool(
 // --- update_task ---
 server.tool(
   'update_task',
-  'Update an existing scheduled task. Only provided fields are changed. Cron format: 5-field only "minute hour dom month dow" (e.g. "0 8 * * *"). No ? wildcards or 6-field format.',
+  'Update an existing scheduled task. Only provided fields are changed. Cron format: AWS 6-field "minute hour dom month dow year" (use ? for day-of-week or day-of-month). See schedule_task for full format docs.',
   {
     task_id: z.string().describe('The task ID to update'),
     prompt: z.string().optional().describe('New prompt for the task'),
@@ -254,11 +257,7 @@ server.tool(
       .describe('New schedule value (see schedule_task for format)'),
   },
   async (args) => {
-    // Validate if schedule values provided
-    if (args.schedule_type === 'cron' && args.schedule_value) {
-      const err = validateCron(args.schedule_value);
-      if (err) return { content: [{ type: 'text' as const, text: err }], isError: true };
-    }
+    // Validate interval and once locally; cron validated by AWS
     if (args.schedule_type === 'interval' && args.schedule_value) {
       const err = validateInterval(args.schedule_value);
       if (err) return { content: [{ type: 'text' as const, text: err }], isError: true };
@@ -268,15 +267,20 @@ server.tool(
       if (err) return { content: [{ type: 'text' as const, text: err }], isError: true };
     }
 
-    const ctx = await buildContext();
-    await updateTask(ctx, args.task_id, {
-      prompt: args.prompt,
-      scheduleType: args.schedule_type,
-      scheduleValue: args.schedule_value,
-    });
-    return {
-      content: [{ type: 'text' as const, text: `Task ${args.task_id} updated.` }],
-    };
+    try {
+      const ctx = await buildContext();
+      await updateTask(ctx, args.task_id, {
+        prompt: args.prompt,
+        scheduleType: args.schedule_type,
+        scheduleValue: args.schedule_value,
+      });
+      return {
+        content: [{ type: 'text' as const, text: `Task ${args.task_id} updated.` }],
+      };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { content: [{ type: 'text' as const, text: `Failed to update schedule: ${message}` }], isError: true };
+    }
   },
 );
 

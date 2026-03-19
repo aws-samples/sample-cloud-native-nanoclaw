@@ -30,7 +30,7 @@ import {
   UpdateScheduleCommand,
   DeleteScheduleCommand,
 } from '@aws-sdk/client-scheduler';
-import { CronExpressionParser } from 'cron-parser';
+// cron-parser removed — AWS EventBridge validates cron expressions directly
 import type { ScopedClients } from './scoped-credentials.js';
 import type { ScheduledTask, SqsTextReplyPayload, SqsFileReplyPayload, ChannelType } from '@clawbot/shared';
 
@@ -187,7 +187,7 @@ export async function scheduleTask(
 
   // 1. Create EventBridge Scheduler schedule FIRST (fail early, no orphan DB records)
   const scheduleName = `nanoclawbot-${ctx.botId}-${taskId}`;
-  const scheduleExpression = toEventBridgeExpression(scheduleType, scheduleValue);
+  const scheduleExpression = toScheduleExpression(scheduleType, scheduleValue);
 
   const scheduleResult = await ctx.clients.scheduler.send(
     new CreateScheduleCommand({
@@ -277,7 +277,7 @@ export async function pauseTask(ctx: McpToolContext, taskId: string): Promise<vo
 
   const scheduleName = `nanoclawbot-${ctx.botId}-${taskId}`;
   const scheduleExpression = existing
-    ? toEventBridgeExpression(existing.scheduleType, existing.scheduleValue)
+    ? toScheduleExpression(existing.scheduleType, existing.scheduleValue)
     : 'rate(1 day)';
 
   await ctx.clients.scheduler.send(
@@ -313,7 +313,7 @@ export async function resumeTask(ctx: McpToolContext, taskId: string): Promise<v
 
   const scheduleName = `nanoclawbot-${ctx.botId}-${taskId}`;
   const scheduleExpression = existing
-    ? toEventBridgeExpression(existing.scheduleType, existing.scheduleValue)
+    ? toScheduleExpression(existing.scheduleType, existing.scheduleValue)
     : 'rate(1 day)';
 
   await ctx.clients.scheduler.send(
@@ -396,10 +396,7 @@ export async function updateTask(
     const existing = await getTask(ctx, taskId);
     if (existing) {
       const scheduleName = `nanoclawbot-${ctx.botId}-${taskId}`;
-      const scheduleExpression = toEventBridgeExpression(
-        existing.scheduleType,
-        existing.scheduleValue,
-      );
+      const scheduleExpression = toScheduleExpression(existing.scheduleType, existing.scheduleValue);
 
       await ctx.clients.scheduler.send(
         new UpdateScheduleCommand({
@@ -449,12 +446,9 @@ function computeNextRun(scheduleType: string, scheduleValue: string): string | u
   const now = new Date();
   switch (scheduleType) {
     case 'cron': {
-      try {
-        const interval = CronExpressionParser.parse(scheduleValue);
-        return interval.next().toISOString() ?? undefined;
-      } catch {
-        return undefined;
-      }
+      // Agent provides AWS 6-field cron — cannot parse with cron-parser
+      // nextRun will be set after first EventBridge execution
+      return undefined;
     }
     case 'interval': {
       const ms = Number(scheduleValue);
@@ -470,50 +464,24 @@ function computeNextRun(scheduleType: string, scheduleValue: string): string | u
 }
 
 /**
- * Convert NanoClaw schedule format to EventBridge Scheduler expression.
- *
- * NanoClaw cron: 5-field (minute hour dom month dow)
- * EventBridge:   6-field cron (minute hour dom month dow year)
- * Interval:      rate(N minutes)
- * Once:          at(ISO timestamp)
+ * Build EventBridge schedule expression from stored schedule type + value.
+ * Cron values are stored in AWS 6-field format and passed through directly.
  */
-function toEventBridgeExpression(scheduleType: string, scheduleValue: string): string {
-  switch (scheduleType) {
-    case 'cron':
-      // Append wildcard year to convert 5-field → 6-field
-      return `cron(${scheduleValue} *)`;
-    case 'interval': {
-      const ms = Number(scheduleValue);
-      const minutes = Math.max(1, Math.round(ms / 60000));
-      return `rate(${minutes} ${minutes === 1 ? 'minute' : 'minutes'})`;
-    }
-    case 'once':
-      return `at(${scheduleValue})`;
-    default:
-      throw new Error(`Unknown schedule type: ${scheduleType}`);
+function toScheduleExpression(scheduleType: string, scheduleValue: string): string {
+  if (scheduleType === 'cron') return `cron(${scheduleValue})`;
+  if (scheduleType === 'interval') {
+    const minutes = Math.max(1, Math.round(Number(scheduleValue) / 60000));
+    return `rate(${minutes} ${minutes === 1 ? 'minute' : 'minutes'})`;
   }
+  return `at(${scheduleValue})`;
 }
 
 // ---------------------------------------------------------------------------
 // Validation helpers (used by mcp-server.ts before calling tool functions)
 // ---------------------------------------------------------------------------
 
-export function validateCron(value: string): string | null {
-  // Reject AWS 6-field cron or ? wildcards
-  if (value.includes('?')) {
-    return 'Invalid cron: Do not use "?" wildcard. Use standard 5-field format: "minute hour day-of-month month day-of-week". Example: "0 8 * * *"';
-  }
-  const fields = value.trim().split(/\s+/);
-  if (fields.length !== 5) {
-    return `Invalid cron: Expected 5 fields but got ${fields.length}. Use format: "minute hour day-of-month month day-of-week". Example: "0 8 * * *"`;
-  }
-  try {
-    CronExpressionParser.parse(value);
-    return null;
-  } catch {
-    return `Invalid cron: "${value}". Use 5-field format like "0 9 * * *" (daily 9am) or "*/5 * * * *" (every 5 min).`;
-  }
-}
+// validateCron removed — AWS EventBridge SDK validates cron expressions directly.
+// Agent provides 6-field AWS cron format; errors from AWS are returned to agent for self-correction.
 
 export function validateInterval(value: string): string | null {
   const ms = parseInt(value, 10);

@@ -53,7 +53,8 @@ function toScheduleExpression(
 ): string {
   switch (scheduleType) {
     case 'cron':
-      return `cron(${scheduleValue} *)`;
+      // Cron value is stored in AWS 6-field format — pass through directly
+      return `cron(${scheduleValue})`;
     case 'interval': {
       const minutes = Math.round(parseInt(scheduleValue, 10) / 60000);
       return `rate(${minutes} minutes)`;
