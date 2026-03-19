@@ -143,24 +143,55 @@ export async function updateUserUsage(
   }
 }
 
+const SLOT_TTL_MS = 5 * 60 * 1000; // 5 minutes — auto-release stale slots
+
 export async function checkAndAcquireAgentSlot(
   userId: string,
   maxConcurrentAgents: number,
 ): Promise<boolean> {
   userIdSchema.parse(userId);
+
+  // Auto-release stale slots: if activeAgents > 0 and slotAcquiredAt is older
+  // than SLOT_TTL_MS, reset to 0. This handles cases where slots leak during
+  // rolling deployments (SIGTERM kills process before releaseAgentSlot runs).
+  try {
+    const userRecord = await client.send(
+      new GetCommand({
+        TableName: config.tables.users,
+        Key: { userId },
+        ProjectionExpression: 'activeAgents, slotAcquiredAt',
+      }),
+    );
+    const active = (userRecord.Item?.activeAgents as number) ?? 0;
+    const acquiredAt = (userRecord.Item?.slotAcquiredAt as number) ?? 0;
+    if (active > 0 && acquiredAt > 0 && Date.now() - acquiredAt > SLOT_TTL_MS) {
+      await client.send(
+        new UpdateCommand({
+          TableName: config.tables.users,
+          Key: { userId },
+          UpdateExpression: 'SET activeAgents = :zero, slotAcquiredAt = :now',
+          ExpressionAttributeValues: { ':zero': 0, ':now': Date.now() },
+        }),
+      );
+    }
+  } catch {
+    // Best-effort cleanup — don't block the acquire attempt
+  }
+
   try {
     await client.send(
       new UpdateCommand({
         TableName: config.tables.users,
         Key: { userId },
         UpdateExpression:
-          'SET activeAgents = if_not_exists(activeAgents, :zero) + :one',
+          'SET activeAgents = if_not_exists(activeAgents, :zero) + :one, slotAcquiredAt = :now',
         ConditionExpression:
           'attribute_not_exists(activeAgents) OR activeAgents < :max',
         ExpressionAttributeValues: {
           ':zero': 0,
           ':one': 1,
           ':max': maxConcurrentAgents,
+          ':now': Date.now(),
         },
       }),
     );
