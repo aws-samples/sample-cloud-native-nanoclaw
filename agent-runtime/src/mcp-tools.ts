@@ -193,6 +193,9 @@ export async function scheduleTask(
     new CreateScheduleCommand({
       Name: scheduleName,
       ScheduleExpression: scheduleExpression,
+      ScheduleExpressionTimezone: 'UTC',
+      State: 'ENABLED',
+      ActionAfterCompletion: scheduleType === 'once' ? 'DELETE' : 'NONE',
       FlexibleTimeWindow: { Mode: 'OFF' },
       Target: {
         Arn: MESSAGES_QUEUE_ARN,

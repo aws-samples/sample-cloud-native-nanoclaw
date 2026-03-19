@@ -263,6 +263,10 @@ server.tool(
       const err = validateInterval(args.schedule_value);
       if (err) return { content: [{ type: 'text' as const, text: err }], isError: true };
     }
+    if (args.schedule_type === 'once' && args.schedule_value) {
+      const err = validateOnce(args.schedule_value);
+      if (err) return { content: [{ type: 'text' as const, text: err }], isError: true };
+    }
 
     const ctx = await buildContext();
     await updateTask(ctx, args.task_id, {
