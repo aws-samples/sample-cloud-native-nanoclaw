@@ -37,6 +37,7 @@ export interface Bot {
   status: string;
   triggerPattern: string;
   model?: string;
+  modelProvider?: 'bedrock' | 'anthropic-api';
   createdAt: string;
 }
 
@@ -85,6 +86,7 @@ export interface CreateBotRequest {
   description?: string;
   triggerPattern?: string;
   model?: string;
+  modelProvider?: 'bedrock' | 'anthropic-api';
 }
 
 export interface CreateChannelRequest {
@@ -102,6 +104,16 @@ export interface CreateTaskRequest {
 export interface UpdateTaskRequest {
   status?: string;
   prompt?: string;
+}
+
+export interface ProviderConfig {
+  hasApiKey: boolean;
+  anthropicBaseUrl?: string | null;
+}
+
+export interface UpdateProviderRequest {
+  anthropicApiKey?: string;
+  anthropicBaseUrl?: string;
 }
 
 // Bot API
@@ -137,6 +149,8 @@ export const tasks = {
 // User API
 export const user = {
   me: () => request<{ userId: string; email: string; plan?: string; quota?: any; usage?: { month: string; tokens: number; invocations: number }; isAdmin?: boolean }>('/me'),
+  getProvider: () => request<ProviderConfig>('/me/provider'),
+  updateProvider: (data: UpdateProviderRequest) => request<ProviderConfig>('/me/provider', { method: 'PUT', body: JSON.stringify(data) }),
 };
 
 // Admin API types
