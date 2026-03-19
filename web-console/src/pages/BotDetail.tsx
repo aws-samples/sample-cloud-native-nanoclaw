@@ -1,19 +1,25 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { bots as botsApi, channels as channelsApi, groups as groupsApi, Bot, ChannelConfig, Group } from '../lib/api';
+import { bots as botsApi, channels as channelsApi, groups as groupsApi, user as userApi, Bot, ChannelConfig, Group } from '../lib/api';
 
-const MODEL_PRESETS = [
+const BEDROCK_MODEL_PRESETS = [
   { label: 'Claude Haiku 4.5', value: 'global.anthropic.claude-haiku-4-5-20251001-v1:0' },
   { label: 'Claude Sonnet 4.6', value: 'global.anthropic.claude-sonnet-4-6' },
   { label: 'Claude Opus 4.6', value: 'global.anthropic.claude-opus-4-6-v1' },
 ] as const;
 
+const API_MODEL_PRESETS = [
+  { label: 'Claude Haiku 4.5', value: 'claude-haiku-4-5-20251001' },
+  { label: 'Claude Sonnet 4.6', value: 'claude-sonnet-4-6' },
+  { label: 'Claude Opus 4.6', value: 'claude-opus-4-6' },
+] as const;
+
 const DEFAULT_MODEL = 'global.anthropic.claude-sonnet-4-6';
 
-function getModelSelection(model: string | undefined): string {
-  const m = model || DEFAULT_MODEL;
-  const preset = MODEL_PRESETS.find(p => p.value === m);
-  return preset ? m : 'custom';
+function getModelSelection(model: string | undefined, presets: readonly { label: string; value: string }[]): string {
+  const m = model || '';
+  const preset = presets.find(p => p.value === m);
+  return preset ? m : (m ? 'custom' : presets[1].value);
 }
 
 export default function BotDetail() {
@@ -29,24 +35,31 @@ export default function BotDetail() {
   const [customModelId, setCustomModelId] = useState('');
   const [savingModel, setSavingModel] = useState(false);
   const [modelStatus, setModelStatus] = useState<'saved' | 'error' | null>(null);
+  const [provider, setProvider] = useState<'bedrock' | 'anthropic-api'>('bedrock');
+  const [providerHasKey, setProviderHasKey] = useState(false);
 
   useEffect(() => { if (botId) loadData(); }, [botId]);
 
   async function loadData() {
     try {
-      const [botData, chs, grps] = await Promise.all([
+      const [botData, chs, grps, providerConfig] = await Promise.all([
         botsApi.get(botId!),
         channelsApi.list(botId!),
         groupsApi.list(botId!),
+        userApi.getProvider(),
       ]);
       setBot(botData);
       setChannels(chs);
       setGroups(grps);
       setEditName(botData.name);
       setEditDesc(botData.description || '');
-      setModelSelection(getModelSelection(botData.model));
+      setProviderHasKey(providerConfig.hasApiKey);
+      const botProvider = botData.modelProvider || 'bedrock';
+      setProvider(botProvider);
+      const activePresets = botProvider === 'anthropic-api' ? API_MODEL_PRESETS : BEDROCK_MODEL_PRESETS;
+      setModelSelection(getModelSelection(botData.model, activePresets));
       setCustomModelId(
-        MODEL_PRESETS.find(p => p.value === botData.model) ? '' : (botData.model || '')
+        activePresets.find(p => p.value === botData.model) ? '' : (botData.model || '')
       );
     } catch (err) {
       console.error('Failed to load bot:', err);
@@ -67,7 +80,7 @@ export default function BotDetail() {
     setSavingModel(true);
     setModelStatus(null);
     try {
-      await botsApi.update(botId!, { model });
+      await botsApi.update(botId!, { model, modelProvider: provider });
       setModelStatus('saved');
       setTimeout(() => setModelStatus(null), 2000);
       loadData();
@@ -116,8 +129,30 @@ export default function BotDetail() {
       {/* Model selector */}
       <div className="bg-white rounded-lg shadow p-6">
         <h2 className="text-lg font-semibold mb-4">Model</h2>
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-700 mb-1">Provider</label>
+          <select
+            value={provider}
+            onChange={(e) => {
+              const newProvider = e.target.value as 'bedrock' | 'anthropic-api';
+              setProvider(newProvider);
+              const presets = newProvider === 'anthropic-api' ? API_MODEL_PRESETS : BEDROCK_MODEL_PRESETS;
+              setModelSelection(presets[1].value); // Default to Sonnet
+              setCustomModelId('');
+            }}
+            className="text-sm border rounded-md p-2 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          >
+            <option value="bedrock">Bedrock</option>
+            <option value="anthropic-api">Anthropic API</option>
+          </select>
+          {provider === 'anthropic-api' && !providerHasKey && (
+            <p className="text-xs text-red-500 mt-1">
+              No API key configured. <Link to="/settings" className="text-indigo-600 underline">Set up in Settings</Link>
+            </p>
+          )}
+        </div>
         <div className="space-y-3">
-          {MODEL_PRESETS.map((preset) => (
+          {(provider === 'anthropic-api' ? API_MODEL_PRESETS : BEDROCK_MODEL_PRESETS).map((preset) => (
             <label key={preset.value} className="flex items-center gap-3 cursor-pointer">
               <input
                 type="radio"
