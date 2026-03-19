@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ClawBot Cloud — a multi-tenant AI assistant platform on AWS. Users create Bots via a web console, connect messaging channels (Telegram, Discord, Slack), and Bots run Claude Agents in AgentCore microVMs with independent memory, conversations, and scheduled tasks.
+ClawBot Cloud — a multi-tenant AI assistant platform on AWS. Users create Bots via a web console, connect messaging channels (Telegram, Discord, Slack, Feishu/Lark), and Bots run Claude Agents in AgentCore microVMs with independent memory, conversations, and scheduled tasks.
 
 ## Commands
 
@@ -62,7 +62,7 @@ web-console (standalone — talks to control-plane via REST)
 ### Package roles
 
 - **shared** (`@clawbot/shared`) — Domain types (User, Bot, Channel, Message, Task, Session), Channel Adapter interfaces, XML formatter for agent context, text utilities. Exports via subpath exports: `@clawbot/shared/types`, `@clawbot/shared/channel-adapter`, `@clawbot/shared/xml-formatter`, `@clawbot/shared/text-utils`.
-- **control-plane** (`@clawbot/control-plane`) — Fastify HTTP server on ECS Fargate. Handles webhook ingestion (Telegram/Discord/Slack), Discord Gateway (discord.js with leader election), REST API for the web console (JWT-authed via Cognito, including admin APIs), SQS FIFO message dispatching to AgentCore, SQS reply consumption via Channel Adapter Registry, channel health checking, and native CLAUDE.md memory management (bot-level + group-level).
+- **control-plane** (`@clawbot/control-plane`) — Fastify HTTP server on ECS Fargate. Handles webhook ingestion (Telegram/Slack), Discord Gateway (discord.js with leader election), Feishu Gateway (Lark SDK WSClient with leader election), REST API for the web console (JWT-authed via Cognito, including admin APIs), SQS FIFO message dispatching to AgentCore, SQS reply consumption via Channel Adapter Registry, channel health checking, and native CLAUDE.md memory management (bot-level + group-level).
 - **agent-runtime** (`@clawbot/agent-runtime`) — Runs inside AgentCore microVMs. Wraps Claude Agent SDK with MCP tools (send_message, schedule_task, etc.). Manages S3 session sync, native CLAUDE.md memory (via Claude Code settingSources), and STS ABAC scoped credentials. Exposes `/invocations` and `/ping` endpoints.
 - **infra** (`@clawbot/infra`) — AWS CDK (TypeScript). 6 stacks: Foundation (VPC, S3, DynamoDB, SQS, ECR), Auth (Cognito), Agent (IAM ABAC roles), ControlPlane (ALB, ECS, WAF), Frontend (CloudFront + S3), Monitoring (CloudWatch).
 - **web-console** (`@clawbot/web-console`) — React 19 SPA with Vite, TailwindCSS, AWS Amplify for Cognito auth. Pages: Login, Dashboard, BotDetail, ChannelSetup, Messages, Tasks, MemoryEditor (3 tabs: Shared/BotMemory/GroupMemory), Admin UserList/UserDetail.
@@ -73,7 +73,7 @@ User message → Channel webhook/Gateway → Control Plane (signature verificati
 
 Agent intermediate messages: MCP `send_message` → SQS Standard reply queue → Reply Consumer → Channel Adapter → Channel API.
 
-SQS FIFO provides per-group message ordering with cross-group parallelism. Discord uses Gateway (WebSocket) with DynamoDB-based leader election instead of webhooks.
+SQS FIFO provides per-group message ordering with cross-group parallelism. Discord and Feishu use Gateway (WebSocket) with DynamoDB-based leader election instead of webhooks.
 
 ### Security model
 
@@ -87,7 +87,7 @@ SQS FIFO provides per-group message ordering with cross-group parallelism. Disco
 
 - **DynamoDB** — 7 tables for Users, Bots, Channels, Messages, Tasks, Sessions, Groups
 - **S3** — Session state and CLAUDE.md memory files
-- **Secrets Manager** — Channel API tokens (Telegram, Discord, Slack)
+- **Secrets Manager** — Channel API tokens (Telegram, Discord, Slack, Feishu)
 - **EventBridge Scheduler** — Scheduled tasks → SQS → Agent
 
 ## Key Libraries
@@ -99,6 +99,7 @@ SQS FIFO provides per-group message ordering with cross-group parallelism. Disco
 | Claude Agent SDK | 0.2.76 | agent-runtime |
 | MCP SDK | 1.0.0 | agent-runtime |
 | discord.js | 14.25 | control-plane (Discord Gateway) |
+| @larksuiteoapi/node-sdk | 1.59 | control-plane (Feishu Gateway), agent-runtime (Feishu Skills) |
 | aws-jwt-verify | 4.0 | control-plane (Cognito JWT) |
 | Zod | 4.0 | shared, control-plane, agent-runtime |
 | React | 19 | web-console |
@@ -117,6 +118,50 @@ SQS FIFO provides per-group message ordering with cross-group parallelism. Disco
 - Docker images target ARM64 (Graviton for Fargate)
 - Agent runtime container includes Chromium + fonts for browser-based MCP tools
 - `.npmrc` has `install-links=true` for workspace symlinks
+
+## Deployment
+
+Full deployment is orchestrated by `scripts/deploy.sh`. Requires AWS credentials, Docker, Node.js, and CDK bootstrap completed.
+
+```bash
+# Full deploy (all 15 steps: build → Docker → CDK → AgentCore → ECS → Frontend → CloudFront)
+bash scripts/deploy.sh
+
+# Environment variables (auto-detected, override if needed)
+CDK_STAGE=dev              # deployment stage (default: dev)
+AWS_REGION=us-west-2       # AWS region
+```
+
+**What `deploy.sh` does (15 steps):**
+1. Pre-flight checks (aws, docker, node, jq)
+2. `npm install` + `npm run build --workspaces`
+3. ECR login
+4. Build & push control-plane ARM64 Docker image → ECR (`nanoclawbot-control-plane`)
+5. Build & push agent-runtime ARM64 Docker image → ECR (`nanoclawbot-agent`)
+6. `cdk deploy --all` (6 stacks)
+7. Read CDK outputs (Cognito, ALB, CloudFront domain, S3 bucket, agent role)
+8. Register/update AgentCore runtime with new container image
+9. Wait for AgentCore READY (up to 10 min)
+10. Stop warm AgentCore sessions (force new image pickup)
+11. Register new ECS task definition with AGENTCORE_RUNTIME_ARN
+12. Force ECS rolling deployment
+13. Build web-console with Cognito + API env vars
+14. S3 sync frontend to website bucket
+15. CloudFront invalidation + smoke test
+
+```bash
+# Destroy everything (AgentCore runtime + CDK stacks + ECR repos)
+bash scripts/destroy.sh
+
+# Post-deploy: write runtime-discovered values to SSM
+bash scripts/post-deploy.sh
+```
+
+**Output endpoints** (dev stage):
+- Console: `https://<cloudfront-domain>`
+- API: `https://<cloudfront-domain>/api`
+- Health: `https://<cloudfront-domain>/health`
+- Webhooks: `https://<cloudfront-domain>/webhook/{telegram|discord|slack}/{botId}`
 
 ## Design Document
 Full architecture details: [`docs/CLOUD_ARCHITECTURE.md`](./docs/CLOUD_ARCHITECTURE.md)
