@@ -13,19 +13,41 @@ export interface UserQuota {
   maxMonthlyTokens: number;
 }
 
-export const DEFAULT_QUOTA: UserQuota = {
-  maxBots: 10,
-  maxGroupsPerBot: 20,
-  maxTasksPerBot: 50,
-  maxConcurrentAgents: 10,
-  maxMonthlyTokens: 100_000_000,
+export type PlanName = 'free' | 'pro' | 'enterprise';
+
+export type PlanQuotas = Record<PlanName, UserQuota>;
+
+export const PLAN_QUOTAS: PlanQuotas = {
+  free: {
+    maxBots: 2,
+    maxGroupsPerBot: 5,
+    maxTasksPerBot: 10,
+    maxConcurrentAgents: 1,
+    maxMonthlyTokens: 10_000_000,
+  },
+  pro: {
+    maxBots: 10,
+    maxGroupsPerBot: 20,
+    maxTasksPerBot: 50,
+    maxConcurrentAgents: 5,
+    maxMonthlyTokens: 100_000_000,
+  },
+  enterprise: {
+    maxBots: 50,
+    maxGroupsPerBot: 100,
+    maxTasksPerBot: 200,
+    maxConcurrentAgents: 20,
+    maxMonthlyTokens: 1_000_000_000,
+  },
 };
+
+export const DEFAULT_QUOTA: UserQuota = PLAN_QUOTAS.free;
 
 export interface User {
   userId: string; // Cognito sub
   email: string;
   displayName: string;
-  plan: 'free' | 'pro' | 'enterprise';
+  plan: PlanName;
   quota: UserQuota;
   usageMonth: string; // YYYY-MM
   usageTokens: number;
