@@ -26,7 +26,7 @@ Security: WAF │ ABAC via STS SessionTags │ Per-tenant S3/DynamoDB isolation
 
 ```mermaid
 graph TB
-    Users["👤 用户终端<br/>Telegram / Discord / Slack / WhatsApp / Web"]
+    Users["👤 用户终端<br/>飞书/ Discord / Slack "]
 
     subgraph Ingress["入口层"]
         CloudFront["CloudFront + S3<br/>Web 控制台"]
@@ -35,12 +35,12 @@ graph TB
 
     subgraph ECS["ECS Fargate (Control Plane)"]
         Fastify["Fastify HTTP Server<br/>REST API · Webhook · 健康检查"]
-        SQSConsumer["SQS Consumer<br/>入站 FIFO · 回复 Standard"]
-        Adapters["Channel Adapters<br/>Discord · Telegram · Slack"]
+        SQSConsumer["SQS Consumer<br/>入站 FIFO "]
+        Adapters["Channel Adapters"]
     end
 
     subgraph Agent["Agent Execution Layer"]
-        MicroVM["AgentCore microVM<br/>Claude SDK + Bedrock<br/>工具 · MCP · System Prompt"]
+        MicroVM["AgentCore microVM<br/>Claude Agent SDK + Bedrock<br/>工具 · MCP · Skills"]
     end
 
     subgraph Data["Data Layer"]
@@ -68,6 +68,7 @@ graph TB
     style ECS fill:#FFF3E0,stroke:#E65100,color:#000
     style Agent fill:#F3E5F5,stroke:#6A1B9A,color:#000
     style Data fill:#FCE4EC,stroke:#C62828,color:#000
+
 ```
 
 ## Packages
