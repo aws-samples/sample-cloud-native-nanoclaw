@@ -182,12 +182,24 @@ export interface UpdateQuotaRequest {
   maxMonthlyTokens?: number;
 }
 
+export interface PlanQuotaValues {
+  maxBots: number;
+  maxGroupsPerBot: number;
+  maxTasksPerBot: number;
+  maxConcurrentAgents: number;
+  maxMonthlyTokens: number;
+}
+
+export type PlanQuotasConfig = Record<'free' | 'pro' | 'enterprise', PlanQuotaValues>;
+
 // Admin API
 export const admin = {
   listUsers: () => request<AdminUser[]>('/admin'),
   getUser: (userId: string) => request<AdminUser>(`/admin/${userId}`),
   updateQuota: (userId: string, quota: UpdateQuotaRequest) => request<{ ok: boolean }>(`/admin/${userId}/quota`, { method: 'PUT', body: JSON.stringify(quota) }),
   updatePlan: (userId: string, plan: string) => request<{ ok: boolean }>(`/admin/${userId}/plan`, { method: 'PUT', body: JSON.stringify({ plan }) }),
+  getPlans: () => request<PlanQuotasConfig>('/admin/plans'),
+  updatePlans: (quotas: PlanQuotasConfig) => request<{ ok: boolean }>('/admin/plans', { method: 'PUT', body: JSON.stringify(quotas) }),
 };
 
 // File Browser types
