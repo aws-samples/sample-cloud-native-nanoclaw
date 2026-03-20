@@ -145,6 +145,17 @@ export async function syncMemoryOnlyFromS3(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/** Directory names that should never be synced to/from S3. */
+const EXCLUDED_DIRS = new Set(['.git', 'node_modules', '.venv', '__pycache__']);
+
+/**
+ * Check if a relative path contains an excluded directory segment.
+ * e.g. "foo/.git/objects/pack.idx" → true, "foo/bar.txt" → false
+ */
+function isExcludedPath(relPath: string): boolean {
+  return relPath.split('/').some((seg) => EXCLUDED_DIRS.has(seg));
+}
+
 async function deleteS3Object(
   s3: S3Client,
   bucket: string,
@@ -205,6 +216,8 @@ async function downloadDirectory(
       if (!obj.Key) continue;
       const rel = obj.Key.slice(prefix.length).replace(/^\/+/, '');
       if (!rel) continue;
+      // Skip excluded directories (.git, node_modules, etc.)
+      if (isExcludedPath(rel)) continue;
       await downloadFile(s3, bucket, obj.Key, join(localDir, rel), logger);
     }
 
@@ -261,6 +274,9 @@ async function uploadDirectory(
     for (const entry of entries) {
       const fullPath = join(entry.parentPath || entry.path, entry.name);
       const rel = relative(localDir, fullPath);
+
+      // Skip excluded directories (.git, node_modules, etc.)
+      if (isExcludedPath(rel)) continue;
 
       if (entry.isFile()) {
         uploadedRels.add(rel);
