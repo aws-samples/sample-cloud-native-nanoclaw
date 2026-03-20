@@ -60,10 +60,14 @@ export async function putUser(user: User): Promise<void> {
   );
 }
 
-/** Get user, auto-provisioning with default quota if record is missing or incomplete. */
+/** Get user, auto-provisioning with plan-based quota if record is missing or incomplete. */
 export async function ensureUser(userId: string, email?: string): Promise<User> {
   const existing = await getUser(userId);
   if (existing?.quota) return existing;
+
+  // Fetch admin-configured plan quotas; fall back to built-in defaults
+  const planQuotas = await getPlanQuotas();
+  const freeQuota = planQuotas.free ?? DEFAULT_QUOTA;
 
   const now = new Date().toISOString();
   const user: User = {
@@ -71,7 +75,7 @@ export async function ensureUser(userId: string, email?: string): Promise<User> 
     email: email || existing?.email || '',
     displayName: existing?.displayName || '',
     plan: existing?.plan || 'free',
-    quota: existing?.quota || DEFAULT_QUOTA,
+    quota: existing?.quota || freeQuota,
     usageMonth: existing?.usageMonth || now.slice(0, 7),
     usageTokens: existing?.usageTokens || 0,
     usageInvocations: existing?.usageInvocations || 0,
