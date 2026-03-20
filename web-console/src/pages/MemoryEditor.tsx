@@ -128,6 +128,14 @@ export default function MemoryEditor() {
         </div>
       )}
 
+      {/* Empty group memory hint */}
+      {!loading && level === 'group' && !content && !error && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+          This conversation has no independent memory yet. The bot will use its bot-level memory by default.
+          Group memory is created automatically when the agent saves conversation-specific context, or you can add it manually below.
+        </div>
+      )}
+
       {/* Editor */}
       {loading ? (
         <div className="flex items-center justify-center py-20">
