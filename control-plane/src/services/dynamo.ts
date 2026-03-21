@@ -312,31 +312,6 @@ export async function updateUserPlan(
   );
 }
 
-export async function updateUserProvider(
-  userId: string,
-  updates: { anthropicBaseUrl?: string },
-): Promise<void> {
-  userIdSchema.parse(userId);
-  const expressions: string[] = [];
-  const values: Record<string, unknown> = {};
-
-  if (updates.anthropicBaseUrl !== undefined) {
-    expressions.push('anthropicBaseUrl = :baseUrl');
-    values[':baseUrl'] = updates.anthropicBaseUrl;
-  }
-
-  if (expressions.length === 0) return;
-
-  await client.send(
-    new UpdateCommand({
-      TableName: config.tables.users,
-      Key: { userId },
-      UpdateExpression: `SET ${expressions.join(', ')}`,
-      ExpressionAttributeValues: values,
-    }),
-  );
-}
-
 /** Create a new User record (admin user provisioning). */
 export async function createUserRecord(
   userId: string,
@@ -468,6 +443,8 @@ export async function updateBot(
     'description',
     'systemPrompt',
     'triggerPattern',
+    'providerId',
+    'modelId',
     'model',
     'modelProvider',
     'status',

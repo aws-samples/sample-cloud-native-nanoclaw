@@ -7,6 +7,7 @@ import { ulid } from 'ulid';
 import {
   createBot,
   getBot,
+  getProvider,
   getUser,
   listBots,
   updateBot,
@@ -19,8 +20,8 @@ const createBotSchema = z.object({
   description: z.string().max(500).optional(),
   systemPrompt: z.string().max(10000).optional(),
   triggerPattern: z.string().max(200).optional(),
-  model: z.string().min(1).max(200).optional(),
-  modelProvider: z.enum(['bedrock', 'anthropic-api']).optional(),
+  providerId: z.string().min(1).max(100).optional(),
+  modelId: z.string().min(1).max(200).optional(),
 });
 
 const updateBotSchema = z.object({
@@ -28,8 +29,8 @@ const updateBotSchema = z.object({
   description: z.string().max(500).optional(),
   systemPrompt: z.string().max(10000).optional(),
   triggerPattern: z.string().max(200).optional(),
-  model: z.string().min(1).max(200).optional(),
-  modelProvider: z.enum(['bedrock', 'anthropic-api']).optional(),
+  providerId: z.string().min(1).max(100).optional(),
+  modelId: z.string().min(1).max(200).optional(),
   status: z.enum(['active', 'paused', 'deleted']).optional(),
 });
 
@@ -70,8 +71,8 @@ export const botsRoutes: FastifyPluginAsync = async (app) => {
       description: body.description,
       systemPrompt: body.systemPrompt,
       triggerPattern: body.triggerPattern || `@${body.name}`,
-      model: body.model,
-      modelProvider: body.modelProvider,
+      providerId: body.providerId,
+      modelId: body.modelId,
       status: 'created',
       createdAt: now,
       updatedAt: now,
@@ -114,14 +115,14 @@ export const botsRoutes: FastifyPluginAsync = async (app) => {
         }
       }
 
-      // Validate API key exists when switching to anthropic-api
-      if (updates.modelProvider === 'anthropic-api') {
-        const { getAnthropicApiKey } = await import('../../services/secrets.js');
-        const apiKey = await getAnthropicApiKey(request.userId);
-        if (!apiKey) {
-          return reply.status(400).send({
-            error: 'Anthropic API key not configured. Set it via Settings before switching provider.',
-          });
+      // Validate provider and modelId exist
+      if (updates.providerId) {
+        const provider = await getProvider(updates.providerId);
+        if (!provider) {
+          return reply.status(400).send({ error: 'Provider not found' });
+        }
+        if (updates.modelId && !provider.modelIds.includes(updates.modelId)) {
+          return reply.status(400).send({ error: 'Model ID not available for this provider' });
         }
       }
 

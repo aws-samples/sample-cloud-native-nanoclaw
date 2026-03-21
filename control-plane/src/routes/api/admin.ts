@@ -1,8 +1,9 @@
-// ClawBot Cloud — Admin API Routes
-// Manage users, quotas, and plans (requires clawbot-admins Cognito group)
+// NanoClaw on Cloud — Admin API Routes
+// Manage users, quotas, plans, and model providers (requires clawbot-admins Cognito group)
 
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
+import { ulid } from 'ulid';
 import {
   CognitoIdentityProviderClient,
   AdminCreateUserCommand,
@@ -21,7 +22,15 @@ import {
   softDeleteUser,
   getPlanQuotas,
   savePlanQuotas,
+  getProvider,
+  listProviders,
+  putProvider,
+  updateProvider as updateProviderDb,
+  deleteProvider as deleteProviderDb,
+  clearDefaultProvider,
 } from '../../services/dynamo.js';
+import { putProviderApiKey, deleteProviderApiKey } from '../../services/secrets.js';
+import type { ProviderType } from '@clawbot/shared';
 
 const cognitoClient = new CognitoIdentityProviderClient({ region: config.cognito.region });
 
@@ -60,6 +69,24 @@ const planQuotasSchema = z.object({
   free: userQuotaSchema,
   pro: userQuotaSchema,
   enterprise: userQuotaSchema,
+});
+
+const providerCreateSchema = z.object({
+  providerName: z.string().min(1).max(100),
+  providerType: z.enum(['bedrock', 'anthropic-compatible-api']),
+  baseUrl: z.string().url().max(500).optional(),
+  apiKey: z.string().min(1).max(2000).optional(),
+  modelIds: z.array(z.string().min(1).max(200)).min(1),
+  isDefault: z.boolean().optional().default(false),
+});
+
+const providerUpdateSchema = z.object({
+  providerName: z.string().min(1).max(100).optional(),
+  providerType: z.enum(['bedrock', 'anthropic-compatible-api']).optional(),
+  baseUrl: z.string().url().max(500).optional().nullable(),
+  apiKey: z.string().min(1).max(2000).optional(),
+  modelIds: z.array(z.string().min(1).max(200)).min(1).optional(),
+  isDefault: z.boolean().optional(),
 });
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
@@ -256,5 +283,93 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(500).send({ error: 'User disabled in auth but database update failed' });
     }
     return { ok: true };
+  });
+
+  // ── Provider CRUD ───────────────────────────────────────────────────────
+
+  // List all providers
+  app.get('/providers', async () => {
+    return listProviders();
+  });
+
+  // Create a provider
+  app.post('/providers', async (request, reply) => {
+    const body = providerCreateSchema.parse(request.body);
+    const now = new Date().toISOString();
+    const providerId = ulid();
+
+    // If this provider is the new default, clear existing default first
+    if (body.isDefault) {
+      await clearDefaultProvider();
+    }
+
+    // Store API key in Secrets Manager if provided
+    if (body.apiKey) {
+      await putProviderApiKey(providerId, body.apiKey);
+    }
+
+    await putProvider({
+      providerId,
+      providerName: body.providerName,
+      providerType: body.providerType as ProviderType,
+      baseUrl: body.baseUrl,
+      hasApiKey: !!body.apiKey,
+      modelIds: body.modelIds,
+      isDefault: body.isDefault,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const created = await getProvider(providerId);
+    return reply.status(201).send(created);
+  });
+
+  // Update a provider
+  app.put<{ Params: { providerId: string } }>('/providers/:providerId', async (request, reply) => {
+    const { providerId } = request.params;
+    const existing = await getProvider(providerId);
+    if (!existing) {
+      return reply.status(404).send({ error: 'Provider not found' });
+    }
+
+    const body = providerUpdateSchema.parse(request.body);
+    const now = new Date().toISOString();
+
+    // If setting as default, clear existing default first
+    if (body.isDefault) {
+      await clearDefaultProvider();
+    }
+
+    // Update API key in Secrets Manager if provided
+    if (body.apiKey) {
+      await putProviderApiKey(providerId, body.apiKey);
+    }
+
+    await updateProviderDb(providerId, {
+      ...(body.providerName !== undefined && { providerName: body.providerName }),
+      ...(body.providerType !== undefined && { providerType: body.providerType as ProviderType }),
+      ...(body.baseUrl !== undefined && { baseUrl: body.baseUrl ?? undefined }),
+      ...(body.apiKey !== undefined && { hasApiKey: true }),
+      ...(body.modelIds !== undefined && { modelIds: body.modelIds }),
+      ...(body.isDefault !== undefined && { isDefault: body.isDefault }),
+      updatedAt: now,
+    });
+
+    const updated = await getProvider(providerId);
+    return updated;
+  });
+
+  // Delete a provider
+  app.delete<{ Params: { providerId: string } }>('/providers/:providerId', async (request, reply) => {
+    const { providerId } = request.params;
+    const existing = await getProvider(providerId);
+    if (!existing) {
+      return reply.status(404).send({ error: 'Provider not found' });
+    }
+
+    // Delete API key from Secrets Manager
+    await deleteProviderApiKey(providerId);
+    await deleteProviderDb(providerId);
+    return reply.status(204).send();
   });
 };
