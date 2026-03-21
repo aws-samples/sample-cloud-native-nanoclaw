@@ -122,6 +122,62 @@ async function resolveProviderCredentials(
   }
 }
 
+// ── Default Proxy Rules ─────────────────────────────────────────────────────
+
+/** Built-in proxy rules that are always available. User-configured secrets fill them in. */
+const DEFAULT_PROXY_RULES = [
+  { prefix: '/anthropic', target: 'https://api.anthropic.com', authType: 'api-key' as const, headerName: 'x-api-key' },
+  { prefix: '/openai', target: 'https://api.openai.com', authType: 'bearer' as const },
+  { prefix: '/github', target: 'https://api.github.com', authType: 'bearer' as const },
+  { prefix: '/jira', target: 'https://your-domain.atlassian.net', authType: 'basic' as const },
+  { prefix: '/google-ai', target: 'https://generativelanguage.googleapis.com', authType: 'api-key' as const, headerName: 'x-goog-api-key' },
+];
+
+/**
+ * Build merged proxy rules: start with defaults, overlay user-configured rules.
+ * The Anthropic rule is auto-populated from the existing Anthropic API key config.
+ * Only rules with a secret value are included (no point proxying without auth).
+ */
+async function buildProxyRules(
+  userId: string,
+  anthropicApiKey: string | undefined,
+  anthropicBaseUrl: string | undefined,
+): Promise<Array<{ prefix: string; target: string; authType: 'bearer' | 'api-key' | 'basic'; headerName?: string; value: string }>> {
+  const userRules = await getProxyRules(userId);
+
+  // Build a map of user rules by prefix (user rules override defaults)
+  const ruleMap = new Map<string, { prefix: string; target: string; authType: 'bearer' | 'api-key' | 'basic'; headerName?: string; value: string }>();
+
+  // 1. Seed with defaults (no value yet)
+  for (const def of DEFAULT_PROXY_RULES) {
+    ruleMap.set(def.prefix, { ...def, value: '' });
+  }
+
+  // 2. Auto-fill Anthropic from existing config
+  if (anthropicApiKey) {
+    const existing = ruleMap.get('/anthropic')!;
+    ruleMap.set('/anthropic', {
+      ...existing,
+      target: anthropicBaseUrl || existing.target,
+      value: anthropicApiKey,
+    });
+  }
+
+  // 3. Overlay user-configured rules (these have explicit secrets)
+  for (const ur of userRules) {
+    ruleMap.set(ur.prefix, {
+      prefix: ur.prefix,
+      target: ur.target,
+      authType: ur.authType,
+      headerName: ur.headerName,
+      value: ur.value,
+    });
+  }
+
+  // 4. Filter out rules without a secret — no point proxying without auth
+  return [...ruleMap.values()].filter((r) => r.value);
+}
+
 // ── Main dispatch entry point ───────────────────────────────────────────────
 
 export async function dispatch(
@@ -194,8 +250,8 @@ async function dispatchMessage(
     // Resolve provider credentials (Anthropic API key + base URL) if bot uses anthropic-api
     const providerCreds = await resolveProviderCredentials(bot, payload.userId, logger);
 
-    // 6b. Load proxy rules for credential injection
-    const proxyRules = await getProxyRules(payload.userId);
+    // 6b. Build proxy rules — merge defaults with user config, auto-fill Anthropic key
+    const proxyRules = await buildProxyRules(payload.userId, providerCreds.anthropicApiKey, providerCreds.anthropicBaseUrl);
 
     // 6c. Check for model/provider change → force new session if needed
     const effectiveProvider = providerCreds.modelProvider ?? bot.modelProvider;
@@ -235,15 +291,7 @@ async function dispatchMessage(
       ...(feishuConfig && { feishu: feishuConfig }),
       ...providerCreds,
       ...(forceNewSession && { forceNewSession: true }),
-      ...(proxyRules.length > 0 && {
-        proxyRules: proxyRules.map((r) => ({
-          prefix: r.prefix,
-          target: r.target,
-          authType: r.authType,
-          headerName: r.headerName,
-          value: r.value,
-        })),
-      }),
+      ...(proxyRules.length > 0 && { proxyRules }),
     };
 
     logger.info(
@@ -378,7 +426,7 @@ async function dispatchTask(
   const feishuConfig = await buildFeishuConfig(payload.botId, channelType, logger);
 
   const providerCreds = await resolveProviderCredentials(bot, payload.userId, logger);
-  const proxyRulesTask = await getProxyRules(payload.userId);
+  const proxyRulesTask = await buildProxyRules(payload.userId, providerCreds.anthropicApiKey, providerCreds.anthropicBaseUrl);
 
   // Check for model/provider change
   const effectiveProvider = providerCreds.modelProvider ?? bot.modelProvider;
@@ -412,13 +460,7 @@ async function dispatchTask(
     ...providerCreds,
     ...(forceNewSession && { forceNewSession: true }),
     ...(proxyRulesTask.length > 0 && {
-      proxyRules: proxyRulesTask.map((r) => ({
-        prefix: r.prefix,
-        target: r.target,
-        authType: r.authType,
-        headerName: r.headerName,
-        value: r.value,
-      })),
+      proxyRules: proxyRulesTask,
     }),
   };
 
