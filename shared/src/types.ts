@@ -21,11 +21,14 @@ export const DEFAULT_QUOTA: UserQuota = {
   maxMonthlyTokens: 100_000_000,
 };
 
+export type UserStatus = 'active' | 'suspended' | 'deleted';
+
 export interface User {
   userId: string; // Cognito sub
   email: string;
   displayName: string;
   plan: 'free' | 'pro' | 'enterprise';
+  status: UserStatus;
   quota: UserQuota;
   usageMonth: string; // YYYY-MM
   usageTokens: number;

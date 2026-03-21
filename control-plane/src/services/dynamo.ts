@@ -70,6 +70,7 @@ export async function ensureUser(userId: string, email?: string): Promise<User> 
     email: email || existing?.email || '',
     displayName: existing?.displayName || '',
     plan: existing?.plan || 'free',
+    status: existing?.status || 'active',
     quota: existing?.quota || DEFAULT_QUOTA,
     usageMonth: existing?.usageMonth || now.slice(0, 7),
     usageTokens: existing?.usageTokens || 0,
