@@ -5,6 +5,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import type { CognitoJwtVerifierSingleUserPool } from 'aws-jwt-verify/cognito-verifier';
 import { config } from '../../config.js';
+import { getUser } from '../../services/dynamo.js';
 import { botsRoutes } from './bots.js';
 import { channelsRoutes } from './channels.js';
 import { groupsRoutes } from './groups.js';
@@ -66,18 +67,23 @@ export const apiRoutes: FastifyPluginAsync = async (app) => {
         request.userEmail = 'dev@localhost';
         request.isAdmin = false;
       }
-      return;
+    } else {
+      try {
+        const payload = await verifier.verify(token);
+        request.userId = payload.sub;
+        request.userEmail = (payload as Record<string, unknown>).email as string || '';
+        const groups = ((payload as Record<string, unknown>)['cognito:groups'] as string[]) || [];
+        request.isAdmin = groups.includes('clawbot-admins');
+      } catch (err) {
+        request.log.warn({ err }, 'JWT verification failed');
+        return reply.status(401).send({ error: 'Invalid or expired token' });
+      }
     }
 
-    try {
-      const payload = await verifier.verify(token);
-      request.userId = payload.sub;
-      request.userEmail = (payload as Record<string, unknown>).email as string || '';
-      const groups = ((payload as Record<string, unknown>)['cognito:groups'] as string[]) || [];
-      request.isAdmin = groups.includes('clawbot-admins');
-    } catch (err) {
-      request.log.warn({ err }, 'JWT verification failed');
-      return reply.status(401).send({ error: 'Invalid or expired token' });
+    // Check user status — suspended or deleted users are forbidden
+    const user = await getUser(request.userId);
+    if (user && (user.status === 'suspended' || user.status === 'deleted')) {
+      return reply.status(403).send({ error: 'Account is ' + user.status });
     }
   });
 
