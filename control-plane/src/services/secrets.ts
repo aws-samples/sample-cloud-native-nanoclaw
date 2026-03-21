@@ -27,8 +27,28 @@ export async function getAnthropicApiKey(userId: string): Promise<string | null>
   }
 }
 
-export async function putAnthropicApiKey(userId: string, apiKey: string): Promise<void> {
-  const secretId = anthropicKeySecretId(userId);
+// ── Provider API Keys ───────────────────────────────────────────────────
+
+function providerKeySecretId(providerId: string): string {
+  return `nanoclawbot/${config.stage}/providers/${providerId}/api-key`;
+}
+
+export async function getProviderApiKey(providerId: string): Promise<string | null> {
+  try {
+    const result = await client.send(
+      new GetSecretValueCommand({ SecretId: providerKeySecretId(providerId) }),
+    );
+    return result.SecretString ?? null;
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'ResourceNotFoundException') {
+      return null;
+    }
+    throw err;
+  }
+}
+
+export async function putProviderApiKey(providerId: string, apiKey: string): Promise<void> {
+  const secretId = providerKeySecretId(providerId);
   try {
     await client.send(
       new PutSecretValueCommand({ SecretId: secretId, SecretString: apiKey }),
@@ -44,11 +64,11 @@ export async function putAnthropicApiKey(userId: string, apiKey: string): Promis
   }
 }
 
-export async function deleteAnthropicApiKey(userId: string): Promise<void> {
+export async function deleteProviderApiKey(providerId: string): Promise<void> {
   try {
     await client.send(
       new DeleteSecretCommand({
-        SecretId: anthropicKeySecretId(userId),
+        SecretId: providerKeySecretId(providerId),
         ForceDeleteWithoutRecovery: true,
       }),
     );
