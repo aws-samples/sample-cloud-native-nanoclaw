@@ -111,7 +111,12 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     }
 
     // Create user record in DynamoDB
-    await createUserRecord(userId, email, plan);
+    try {
+      await createUserRecord(userId, email, plan);
+    } catch (err) {
+      request.log.error({ err, userId, email }, 'DDB write failed after Cognito user creation');
+      return reply.status(500).send({ error: 'User created in auth but database write failed. Contact support.' });
+    }
 
     return { ok: true, userId, email };
   });
@@ -190,6 +195,9 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
 
   // ── Suspend / activate user ───────────────────────────────────────────────
   app.put<{ Params: { userId: string } }>('/:userId/status', async (request, reply) => {
+    if (request.params.userId === request.userId) {
+      return reply.status(400).send({ error: 'Cannot modify your own account status' });
+    }
     const user = await getUser(request.params.userId);
     if (!user) {
       return reply.status(404).send({ error: 'User not found' });
@@ -209,12 +217,25 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       }
     }
 
-    await updateUserStatus(request.params.userId, status);
+    try {
+      await updateUserStatus(request.params.userId, status);
+    } catch (err) {
+      // Compensate: reverse Cognito change on DDB failure
+      request.log.error({ err, userId: request.params.userId }, 'DDB status update failed after Cognito change');
+      if (userPoolId) {
+        const CompensateCmd = status === 'suspended' ? AdminEnableUserCommand : AdminDisableUserCommand;
+        await cognitoClient.send(new CompensateCmd({ UserPoolId: userPoolId, Username: user.email })).catch(() => {});
+      }
+      return reply.status(500).send({ error: 'Failed to update user status' });
+    }
     return { ok: true };
   });
 
   // ── Soft-delete user ──────────────────────────────────────────────────────
   app.delete<{ Params: { userId: string } }>('/:userId', async (request, reply) => {
+    if (request.params.userId === request.userId) {
+      return reply.status(400).send({ error: 'Cannot delete your own account' });
+    }
     const user = await getUser(request.params.userId);
     if (!user) {
       return reply.status(404).send({ error: 'User not found' });
@@ -227,7 +248,13 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       );
     }
 
-    await softDeleteUser(request.params.userId);
+    try {
+      await softDeleteUser(request.params.userId);
+    } catch (err) {
+      request.log.error({ err, userId: request.params.userId }, 'DDB soft-delete failed after Cognito disable');
+      // Cognito is already disabled — log for manual remediation
+      return reply.status(500).send({ error: 'User disabled in auth but database update failed' });
+    }
     return { ok: true };
   });
 };
