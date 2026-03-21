@@ -177,7 +177,26 @@ Agent 尝试获取 API Key:
 
 #### 存储与管理
 
-- **存储位置:** Secrets Manager `nanoclawbot/{stage}/{userId}/proxy-rules`（JSON 数组）
+所有凭证统一存储在 **AWS Secrets Manager**，DynamoDB 仅存 Secret ARN 引用，不存明文。
+
+```
+Secrets Manager 凭证布局:
+
+nanoclawbot/{stage}/
+  ├── {userId}/
+  │   ├── anthropic-api-key          ← Anthropic API Key (纯字符串)
+  │   └── proxy-rules                ← Proxy 规则 (JSON 数组, 含 secret 值)
+  │
+  └── {botId}/
+      ├── telegram                   ← Telegram Bot Token (JSON: {token})
+      ├── discord                    ← Discord Bot Token (JSON: {token, publicKey})
+      ├── slack                      ← Slack Token (JSON: {botToken, signingSecret})
+      └── feishu                     ← Feishu App Credentials (JSON: {appId, appSecret, domain})
+
+DynamoDB channels 表:
+  └── credentialSecretArn            ← 只存 ARN, 不存明文
+```
+
 - **Web Console:** Settings → API Credentials tab，支持 CRUD + 预设模板
 - **向后兼容:** 无 proxyRules 时回退到传统环境变量方式
 
