@@ -28,6 +28,8 @@
 │ ├── Channel 凭证存 Secrets Manager   │
 │ ├── Agent 通过 IAM Role 访问 Bedrock │
 │ ├── Agent 容器内无 Channel 凭证       │
+│ ├── Credential Proxy 注入 API Key   │
+│ │   (Agent 仅见 dummy 值)            │
 │ └── Bash 工具继承基础 Role (无 S3)    │
 ├─────────────────────────────────────┤
 │ 层级 5: Agent 执行隔离                │
@@ -102,7 +104,84 @@ Agent Scoped Role (STS AssumeRole 获取, 带 Session Tags)
 
 **Agent 容器内没有 Channel 凭证。** Agent 通过 SQS 回复队列发送消息，Fargate Control Plane 消费后调 Channel API。Agent 只生产文本，不接触任何 Channel 凭证。
 
-### 11.4 用量配额与限流
+### 11.4 Credential Proxy — API Key 注入代理
+
+Agent 执行时可能需要调用第三方 API（Anthropic、OpenAI、GitHub 等），传统方式是通过环境变量传递 API Key，但 Agent 可以通过 `env`、`echo $ANTHROPIC_API_KEY` 或 `/proc/self/environ` 读取明文密钥。
+
+**Credential Proxy** 是一个运行在 AgentCore microVM 内部的轻量反向代理，拦截出站 API 请求并注入凭证。Agent 永远看不到明文 API Key。
+
+#### 架构
+
+```
+Agent (Claude Code)
+  │
+  │  ANTHROPIC_BASE_URL=http://127.0.0.1:9090/anthropic
+  │  ANTHROPIC_API_KEY=proxy-managed  (dummy 值)
+  │
+  ▼
+Credential Proxy (127.0.0.1:9090)  ← 仅本地监听
+  │
+  │  1. 路径前缀匹配 → 找到注入规则
+  │  2. 替换/注入 Auth Header (Bearer / API Key / Basic)
+  │  3. 流式转发请求与响应 (支持 SSE)
+  │
+  ▼
+外部 API (api.anthropic.com, api.github.com, ...)
+```
+
+#### 默认规则 (内置于 Dispatcher)
+
+| 前缀 | 目标 | 认证类型 | Header |
+|------|------|---------|--------|
+| `/anthropic` | `https://api.anthropic.com` | api-key | `x-api-key` |
+| `/openai` | `https://api.openai.com` | bearer | `Authorization` |
+| `/github` | `https://api.github.com` | bearer | `Authorization` |
+| `/jira` | 用户自定义域名 | basic | `Authorization` |
+| `/google-ai` | `https://generativelanguage.googleapis.com` | api-key | `x-goog-api-key` |
+
+#### 规则合并流程
+
+```
+Dispatcher 构建 proxyRules:
+  │
+  ├── 1. 加载默认规则 (5 条内置)
+  ├── 2. 自动填入 Anthropic Key (从 Settings 已配置的 API Key)
+  ├── 3. 合并用户自定义规则 (API Credentials tab, 按 prefix 覆盖)
+  ├── 4. 过滤掉没有 secret 的规则
+  │
+  └── 传入 InvocationPayload.proxyRules → AgentCore
+        │
+        ├── Agent Runtime 启动 Credential Proxy (port 9090)
+        ├── 设置 ANTHROPIC_BASE_URL → proxy
+        ├── 设置 ANTHROPIC_API_KEY = "proxy-managed" (dummy)
+        ├── 运行 Agent Query
+        └── 停止 Credential Proxy
+```
+
+#### 安全效果
+
+```
+Agent 尝试获取 API Key:
+  env | grep API_KEY           → ANTHROPIC_API_KEY=proxy-managed (dummy)
+  cat /proc/self/environ       → ...ANTHROPIC_API_KEY=proxy-managed... (dummy)
+  echo $ANTHROPIC_API_KEY      → proxy-managed (dummy)
+  curl api.anthropic.com       → 无 auth (proxy 未介入)
+  curl localhost:9090/anthropic → ✅ proxy 注入真实 key，转发到 Anthropic API
+
+安全保证:
+  - API Key 仅存在于 proxy 进程内存中
+  - proxy 仅监听 127.0.0.1，外部不可访问
+  - Agent 环境变量只有 dummy 值
+  - microVM 销毁后 proxy 进程内存清零
+```
+
+#### 存储与管理
+
+- **存储位置:** Secrets Manager `nanoclawbot/{stage}/{userId}/proxy-rules`（JSON 数组）
+- **Web Console:** Settings → API Credentials tab，支持 CRUD + 预设模板
+- **向后兼容:** 无 proxyRules 时回退到传统环境变量方式
+
+### 11.5 用量配额与限流
 
 多租户平台必须防止单用户耗尽共享资源。在 Dispatcher 调度 Agent 之前进行配额检查。
 

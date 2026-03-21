@@ -16,7 +16,7 @@
 8. [Channel 管理](./architecture/08-channel-management.md) — 添加/删除 Channel、签名验证、健康检查、多媒体处理
 9. [Agent 执行层](./architecture/09-10-agent-runtime.md) — AgentCore Runtime、容器架构、MCP 工具、S3 同步、ABAC 隔离
 10. [任务调度](./architecture/09-10-agent-runtime.md#10-任务调度) — EventBridge Scheduler 集成
-11. [安全架构](./architecture/11-12-security-observability.md) — 6 层安全模型、租户隔离、凭证安全、配额限流
+11. [安全架构](./architecture/11-12-security-observability.md) — 6 层安全模型、租户隔离、凭证安全、Credential Proxy、配额限流
 12. [可观测性](./architecture/11-12-security-observability.md#12-可观测性) — 监控指标、日志结构
 13. [成本模型](#13-成本模型)
 14. [NanoClaw → ClawBot Cloud 映射](#14-nanoclaw--clawbot-cloud-映射)
