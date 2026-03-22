@@ -180,9 +180,12 @@ async function buildProxyRules(
   // 2. Auto-fill Anthropic from existing config
   if (anthropicApiKey) {
     const existing = ruleMap.get('/anthropic')!;
+    // Normalize base URL: strip trailing API paths that the SDK appends itself
+    let target = anthropicBaseUrl || existing.target;
+    target = target.replace(/\/v1\/?(messages\/?)?$/, '').replace(/\/+$/, '');
     ruleMap.set('/anthropic', {
       ...existing,
-      target: anthropicBaseUrl || existing.target,
+      target,
       value: anthropicApiKey,
     });
   }
