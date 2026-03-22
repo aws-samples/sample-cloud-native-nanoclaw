@@ -1,7 +1,9 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '../lib/auth';
 
 export default function Login() {
+  const { t } = useTranslation();
   const { login, register, needsNewPassword, completeNewPassword } = useAuth();
   const [isRegister, setIsRegister] = useState(false);
   const [email, setEmail] = useState(() => localStorage.getItem('clawbot_saved_email') || '');
@@ -18,7 +20,7 @@ export default function Login() {
     try {
       if (isRegister) {
         await register(email, password);
-        setError('Check your email for verification code, then sign in.');
+        setError(t('login.checkEmail'));
         setIsRegister(false);
       } else {
         if (rememberMe) {
@@ -67,7 +69,7 @@ export default function Login() {
         <span className="text-5xl" role="img" aria-label="lobster">🦞</span>
         <h1 className="mt-6 text-3xl font-bold text-white">NanoClaw on Cloud</h1>
         <p className="mt-3 text-slate-400 text-sm leading-relaxed">
-          Multi-tenant AI assistant platform on AWS
+          {t('login.tagline')}
         </p>
       </div>
     </div>
@@ -87,9 +89,9 @@ export default function Login() {
             </div>
 
             <div>
-              <h2 className="text-center text-2xl font-bold text-slate-900">Set new password</h2>
+              <h2 className="text-center text-2xl font-bold text-slate-900">{t('login.setNewPassword')}</h2>
               <p className="mt-2 text-center text-sm text-slate-500">
-                Your account requires a new password before continuing.
+                {t('login.newPasswordRequired')}
               </p>
             </div>
 
@@ -101,7 +103,7 @@ export default function Login() {
               )}
 
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">New Password</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{t('login.newPassword')}</label>
                 <input
                   type="password"
                   required
@@ -112,7 +114,7 @@ export default function Login() {
               </div>
 
               <button type="submit" disabled={loading} className={buttonClasses}>
-                {loading ? 'Loading...' : 'Set Password'}
+                {loading ? t('common.loading') : t('login.setPassword')}
               </button>
             </form>
           </div>
@@ -135,12 +137,12 @@ export default function Login() {
 
           <div>
             <h2 className="text-center text-2xl font-bold text-slate-900">
-              {isRegister ? 'Create your account' : 'Sign in to your account'}
+              {isRegister ? t('login.registerTitle') : t('login.signInTitle')}
             </h2>
             <p className="mt-2 text-center text-sm text-slate-500">
               {isRegister
-                ? 'Get started with NanoClaw on Cloud'
-                : 'Welcome back to NanoClaw on Cloud'}
+                ? t('login.registerSubtitle')
+                : t('login.signInSubtitle')}
             </p>
           </div>
 
@@ -152,7 +154,7 @@ export default function Login() {
             )}
 
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">{t('login.email')}</label>
               <input
                 type="email"
                 required
@@ -163,7 +165,7 @@ export default function Login() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Password</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">{t('login.password')}</label>
               <input
                 type="password"
                 required
@@ -183,23 +185,23 @@ export default function Login() {
                   className="h-4 w-4 rounded border-slate-300 text-accent-500 focus:ring-accent-500"
                 />
                 <label htmlFor="remember-me" className="ml-2 block text-sm text-slate-600">
-                  Remember password
+                  {t('login.rememberPassword')}
                 </label>
               </div>
             )}
 
             <button type="submit" disabled={loading} className={buttonClasses}>
-              {loading ? 'Loading...' : (isRegister ? 'Register' : 'Sign in')}
+              {loading ? t('common.loading') : (isRegister ? t('login.register') : t('login.signIn'))}
             </button>
 
             <p className="text-center text-sm text-slate-500">
-              {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
+              {isRegister ? t('login.alreadyHaveAccount') : t('login.dontHaveAccount')}{' '}
               <button
                 type="button"
                 onClick={() => setIsRegister(!isRegister)}
                 className="text-accent-600 hover:text-accent-500 font-medium"
               >
-                {isRegister ? 'Sign in' : 'Register'}
+                {isRegister ? t('login.signIn') : t('login.register')}
               </button>
             </p>
           </form>

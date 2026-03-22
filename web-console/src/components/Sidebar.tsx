@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
 import {
   LayoutDashboard,
@@ -23,11 +24,6 @@ interface SidebarProps {
   onLogout: () => void;
 }
 
-const navItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/settings', icon: Settings, label: 'Settings' },
-];
-
 export default function Sidebar({
   collapsed,
   onToggle,
@@ -38,7 +34,13 @@ export default function Sidebar({
   onCreateBot,
   onLogout,
 }: SidebarProps) {
+  const { t, i18n } = useTranslation();
   const location = useLocation();
+
+  const navItems = [
+    { to: '/', icon: LayoutDashboard, label: t('sidebar.dashboard') },
+    { to: '/settings', icon: Settings, label: t('sidebar.settings') },
+  ];
   const [creatingBot, setCreatingBot] = useState(false);
   const [newBotName, setNewBotName] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -118,7 +120,7 @@ export default function Sidebar({
         {isAdmin && (
           <Link
             to="/admin"
-            title={collapsed ? 'Admin' : undefined}
+            title={collapsed ? t('sidebar.admin') : undefined}
             className={clsx(
               'flex items-center h-9 rounded-md transition-colors',
               collapsed ? 'justify-center px-0' : 'px-3',
@@ -128,7 +130,7 @@ export default function Sidebar({
             )}
           >
             <Shield className="w-4 h-4 flex-shrink-0" />
-            {!collapsed && <span className="ml-3 text-sm">Admin</span>}
+            {!collapsed && <span className="ml-3 text-sm">{t('sidebar.admin')}</span>}
           </Link>
         )}
       </nav>
@@ -138,7 +140,7 @@ export default function Sidebar({
         {!collapsed && (
           <div className="px-4 mb-2">
             <span className="text-xs font-medium uppercase tracking-wider text-slate-400">
-              My Bots
+              {t('sidebar.myBots')}
             </span>
           </div>
         )}
@@ -184,26 +186,26 @@ export default function Sidebar({
               onChange={(e) => setNewBotName(e.target.value)}
               onKeyDown={handleCreateKeyDown}
               onBlur={handleCreateSubmit}
-              placeholder="Bot name..."
+              placeholder={t('sidebar.botNamePlaceholder')}
               className="w-full h-8 px-3 text-sm bg-sidebar-800 text-white rounded-md border border-sidebar-700 placeholder-slate-500 focus:outline-none focus:border-accent-500"
             />
           ) : (
             <button
               onClick={() => {
                 if (collapsed) {
-                  onCreateBot('New Bot');
+                  onCreateBot(t('sidebar.newBot'));
                 } else {
                   setCreatingBot(true);
                 }
               }}
-              title={collapsed ? 'New Bot' : undefined}
+              title={collapsed ? t('sidebar.newBot') : undefined}
               className={clsx(
                 'flex items-center h-8 rounded-md transition-colors hover:bg-sidebar-800 hover:text-white w-full',
                 collapsed ? 'justify-center px-0' : 'px-3'
               )}
             >
               <Plus className="w-4 h-4 flex-shrink-0" />
-              {!collapsed && <span className="ml-3 text-sm">New Bot</span>}
+              {!collapsed && <span className="ml-3 text-sm">{t('sidebar.newBot')}</span>}
             </button>
           )}
         </div>
@@ -214,7 +216,7 @@ export default function Sidebar({
         {/* Collapse toggle */}
         <button
           onClick={onToggle}
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={collapsed ? t('sidebar.expandSidebar') : t('sidebar.collapseSidebar')}
           className={clsx(
             'flex items-center h-8 rounded-md transition-colors hover:bg-sidebar-800 hover:text-white w-full',
             collapsed ? 'justify-center px-0' : 'px-3'
@@ -225,8 +227,27 @@ export default function Sidebar({
           ) : (
             <ChevronsLeft className="w-4 h-4 flex-shrink-0" />
           )}
-          {!collapsed && <span className="ml-3 text-sm">Collapse</span>}
+          {!collapsed && <span className="ml-3 text-sm">{t('sidebar.collapse')}</span>}
         </button>
+
+        {/* Language toggle */}
+        {!collapsed && (
+          <button
+            onClick={() => i18n.changeLanguage(i18n.language.startsWith('zh') ? 'en' : 'zh')}
+            className="flex items-center h-8 rounded-md transition-colors hover:bg-sidebar-800 hover:text-white w-full px-3"
+          >
+            <span className="text-sm">{i18n.language.startsWith('zh') ? 'EN' : '中文'}</span>
+          </button>
+        )}
+        {collapsed && (
+          <button
+            onClick={() => i18n.changeLanguage(i18n.language.startsWith('zh') ? 'en' : 'zh')}
+            title={i18n.language.startsWith('zh') ? 'English' : '中文'}
+            className="flex items-center justify-center h-8 rounded-md transition-colors hover:bg-sidebar-800 hover:text-white w-full"
+          >
+            <span className="text-xs font-medium">{i18n.language.startsWith('zh') ? 'EN' : '中'}</span>
+          </button>
+        )}
 
         {/* User email */}
         {!collapsed && (
@@ -240,14 +261,14 @@ export default function Sidebar({
         {/* Sign out */}
         <button
           onClick={onLogout}
-          title={collapsed ? 'Sign out' : undefined}
+          title={collapsed ? t('sidebar.signOut') : undefined}
           className={clsx(
             'flex items-center h-8 rounded-md transition-colors hover:bg-sidebar-800 hover:text-white w-full',
             collapsed ? 'justify-center px-0' : 'px-3'
           )}
         >
           <LogOut className="w-4 h-4 flex-shrink-0" />
-          {!collapsed && <span className="ml-3 text-sm">Sign out</span>}
+          {!collapsed && <span className="ml-3 text-sm">{t('sidebar.signOut')}</span>}
         </button>
       </div>
     </aside>
