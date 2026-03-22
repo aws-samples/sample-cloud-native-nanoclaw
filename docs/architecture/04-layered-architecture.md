@@ -7,23 +7,31 @@
 ```
 技术栈: React 19 + Vite + TailwindCSS
 部署:   S3 (静态资源) + CloudFront (CDN + HTTPS)
-认证:   AWS Amplify (@aws-amplify/ui-react) + Cognito
+认证:   AWS Amplify (aws-amplify) + Cognito (自定义登录表单)
 路由:   react-router-dom v7
+国际化: react-i18next (中英文双语, 浏览器语言自动检测)
 ```
 
 **页面结构：**
 
 | 页面 | 路由 | 功能 |
 |------|------|------|
-| 登录/注册 | `/login` | Cognito 认证 (Amplify Authenticator) |
-| Dashboard | `/` | Bot 列表、创建 Bot |
-| Bot 详情 | `/bots/:botId` | 配置、Channel 管理、Groups 列表 |
-| Channel 配置 | `/bots/:botId/channels/new` | 添加频道、填写凭证 |
-| 对话历史 | `/bots/:botId/messages/:groupJid` | 按 Group 查看消息记录 |
-| 定时任务 | `/bots/:botId/tasks` | 创建/暂停/恢复/删除任务 |
-| 记忆编辑器 | `/memory`, `/bots/:botId/memory` | 7 级记忆编辑 (Shared / User Profile / Identity / Soul / Bootstrap / Bot Memory / Group Memory) |
-| 管理员-用户列表 | `/admin/users` | 用户管理、配额概览 (需 clawbot-admins 组) |
-| 管理员-用户详情 | `/admin/users/:userId` | 配额调整、Plan 变更 |
+| 登录/注册 | (未认证时显示) | Cognito 认证 (自定义表单: 登录/注册/强制改密) |
+| Dashboard | `/` | Bot 列表、用量统计、共享记忆快捷入口 |
+| Bot 详情 | `/bots/:botId` | 7 Tab: 概览、渠道、会话、任务、记忆、文件、设置 |
+| Channel 配置 | `/bots/:botId/channels/new` | 添加频道 (Telegram/Discord/Slack/Feishu)，含分步配置指南 |
+| 对话历史 | `/bots/:botId/messages/:groupJid` | 按 Group 查看消息记录 (聊天气泡视图) |
+| 记忆编辑器 | `/memory`, `/bots/:botId/groups/:groupJid/memory` | 3 级 CLAUDE.md 记忆编辑 (Shared / Bot Memory / Group Memory) |
+| 设置 | `/settings` | 模型供应商管理 (Admin)、API 凭证代理规则 |
+| 管理员 | `/admin` | 用户管理 (列表 + 详情)、Plan 配额管理 |
+| 用户详情 | `/admin/users/:userId` | 用量统计、配额调整、Plan 变更、状态管理 |
+
+**国际化 (i18n)：**
+- `react-i18next` + `i18next-browser-languagedetector`
+- 浏览器语言自动检测 (localStorage → navigator)，语言偏好持久化
+- 侧栏底部 `EN | 中文` 语言切换按钮
+- ~485 个翻译键覆盖所有页面，含频道配置分步指南的完整翻译
+- 富文本指南使用 `Trans` 组件处理内联 JSX
 
 **API 客户端** (`lib/api.ts`) — 统一 fetch 封装，自动注入 Cognito Bearer token，类型化响应。
 
@@ -62,7 +70,8 @@ Fargate Task (单进程, 多线程)
 │   └── 路由 → Channel Adapter Registry → 频道 API
 │
 ├── Channel Adapter Registry (频道适配层)
-│   ├── DiscordAdapter — Gateway 连接 + 选举 + Slash Commands + 打字指示器
+│   ├── DiscordAdapter — Gateway (WebSocket) + Leader 选举 + Slash Commands + 打字指示器
+│   ├── FeishuAdapter  — Gateway (Lark WSClient) + Leader 选举 + 卡片消息 + Reaction 确认
 │   ├── TelegramAdapter — Webhook 模式, sendReply via REST API
 │   └── SlackAdapter — Webhook 模式, sendReply via REST API
 │
@@ -109,34 +118,44 @@ GET    /api/bots/{bot_id}/tasks             # 列出任务
 PUT    /api/bots/{bot_id}/tasks/{task_id}   # 更新/暂停/恢复
 DELETE /api/bots/{bot_id}/tasks/{task_id}   # 删除任务
 
-# 记忆管理 (需 JWT)
+# 记忆管理 — 原生 CLAUDE.md, 3 级 (需 JWT)
 GET    /api/shared-memory                   # 获取用户共享记忆 (跨 Bot)
 PUT    /api/shared-memory                   # 更新用户共享记忆
-GET    /api/user-profile                    # 获取 USER.md (用户档案, 跨 Bot)
-PUT    /api/user-profile                    # 更新 USER.md
-GET    /api/bots/{bot_id}/memory            # 获取 Bot 全局记忆
+GET    /api/bots/{bot_id}/memory            # 获取 Bot 全局记忆 (CLAUDE.md)
 PUT    /api/bots/{bot_id}/memory            # 更新 Bot 全局记忆
-GET    /api/bots/{bot_id}/identity          # 获取 IDENTITY.md (Bot 身份)
-PUT    /api/bots/{bot_id}/identity          # 更新 IDENTITY.md
-GET    /api/bots/{bot_id}/soul              # 获取 SOUL.md (Bot 价值观)
-PUT    /api/bots/{bot_id}/soul              # 更新 SOUL.md
-GET    /api/bots/{bot_id}/bootstrap         # 获取 BOOTSTRAP.md (首次引导)
-PUT    /api/bots/{bot_id}/bootstrap         # 更新 BOOTSTRAP.md
 GET    /api/bots/{bot_id}/groups/{gid}/memory  # Group 记忆
 PUT    /api/bots/{bot_id}/groups/{gid}/memory  # 更新 Group 记忆
 
-# 管理员 (需 JWT + clawbot-admins 组)
-GET    /api/admin                           # 列出所有用户
-GET    /api/admin/{user_id}                 # 用户详情 + 用量
-PUT    /api/admin/{user_id}/quota           # 更新配额
-PUT    /api/admin/{user_id}/plan            # 更新 Plan
+# 模型供应商 (公开列表 + 管理员 CRUD)
+GET    /api/providers                       # 列出可用供应商 (公开, 隐藏密钥)
+POST   /api/admin/providers                 # 创建供应商 (需 Admin)
+GET    /api/admin/providers                 # 列出供应商完整信息 (需 Admin)
+PUT    /api/admin/providers/{provider_id}   # 更新供应商 (需 Admin)
+DELETE /api/admin/providers/{provider_id}   # 删除供应商 (需 Admin)
+
+# API 凭证代理规则 (需 JWT)
+GET    /api/proxy-rules                     # 列出用户的代理规则
+POST   /api/proxy-rules                     # 创建代理规则
+PUT    /api/proxy-rules/{rule_id}           # 更新代理规则
+DELETE /api/proxy-rules/{rule_id}           # 删除代理规则
+
+# 管理员 (需 JWT + isAdmin)
+GET    /api/admin/users                     # 列出所有用户
+POST   /api/admin/users                     # 创建用户 (指定邮箱和 Plan)
+GET    /api/admin/users/{user_id}           # 用户详情 + 用量
+PUT    /api/admin/users/{user_id}/quota     # 更新配额
+PUT    /api/admin/users/{user_id}/plan      # 更新 Plan
+PUT    /api/admin/users/{user_id}/status    # 更新状态 (active/suspended)
+DELETE /api/admin/users/{user_id}           # 删除用户
+GET    /api/admin/plans                     # 获取 Plan 配额配置
+PUT    /api/admin/plans                     # 更新 Plan 配额配置
 
 # Webhook (无需 JWT, 签名验证)
 POST   /webhook/telegram/{bot_id}           # Telegram Webhook
-POST   /webhook/discord/{bot_id}            # Discord Webhook
+POST   /webhook/discord/{bot_id}            # Discord Interactions Endpoint
 POST   /webhook/slack/{bot_id}              # Slack Events API
-POST   /webhook/whatsapp/{bot_id}           # WhatsApp Webhook
-GET    /webhook/whatsapp/{bot_id}           # WhatsApp 验证
+
+# 注意: 飞书使用 WebSocket 长连接 (Lark SDK WSClient), 无 Webhook 端点
 ```
 
 ### 4.3 Webhook 接收 (HTTP Server 内)
@@ -155,8 +174,8 @@ HTTP Server (Fargate 内)
     ├── 4. 验证 Webhook 签名 (防伪造)
     │      ├── Telegram: 验证 secret_token header
     │      ├── Discord: 验证 Ed25519 签名
-    │      ├── Slack: 验证 signing secret
-    │      └── WhatsApp: 验证 app secret
+    │      └── Slack: 验证 signing secret
+    │      # 飞书使用 WSClient 长连接, 不走 Webhook
     ├── 5. 解析消息格式 → 统一 Message 结构
     ├── 6. 写入 DynamoDB (messages 表, ttl = now + 90天)
     ├── 7. 检查触发条件 (@mention / 私聊)
@@ -193,15 +212,15 @@ SQS Inbound Consumer (后台长轮询, consumer.ts → dispatcher.ts)
     │      └── 并发 Agent 槽位 (checkAndAcquireAgentSlot, 原子 DDB 递增)
     ├── 4. 从 DynamoDB 加载近期消息 (逆序取最近 50 条, 过滤 bot 消息)
     ├── 5. 格式化为 XML (formatMessages, NanoClaw router 格式)
-    ├── 6. 构建 InvocationPayload (含 memoryPaths: shared, botGlobal, group,
-    │      identity, soul, bootstrap, user)
-    ├── 7. InvokeAgentRuntimeCommand (同步等待, 无超时限制)
-    ├── 8. 写入 DynamoDB (bot 消息记录, TTL = +90天)
-    ├── 9. 通过 Channel Adapter Registry 发送回复
+    ├── 6. 解析模型供应商 (Bot.providerId → Providers 表 → 凭证 + modelId)
+    ├── 7. 构建 InvocationPayload (含 memoryPaths, 供应商凭证, 飞书工具配置)
+    ├── 8. InvokeAgentRuntimeCommand (同步等待, 无超时限制)
+    ├── 9. 写入 DynamoDB (bot 消息记录, TTL = +90天)
+    ├── 10. 通过 Channel Adapter Registry 发送回复
     │      (sendChannelReply → adapter.sendReply)
-    ├── 10. 更新 session 记录 (DynamoDB sessions 表)
-    ├── 11. 更新用量统计 (updateUserUsage)
-    └── 12. sqs.deleteMessage() 确认消费 (失败则不删, VisibilityTimeout 后重试)
+    ├── 11. 更新 session 记录 (DynamoDB sessions 表)
+    ├── 12. 更新用量统计 (updateUserUsage)
+    └── 13. sqs.deleteMessage() 确认消费 (失败则不删, VisibilityTimeout 后重试)
 
     并发控制: Semaphore(MAX_CONCURRENT_DISPATCHES=20)
     释放: finally 块中 releaseAgentSlot(), semaphore.release()
@@ -240,7 +259,7 @@ AdapterRegistry (singleton, adapters/registry.ts)
 ├── register(adapter) → 注册 adapter
 ├── get(channelType) → 按类型查找
 ├── startAll() / stopAll()
-└── 启动时在 index.ts 中初始化: Discord, Telegram, Slack
+└── 启动时在 index.ts 中初始化: Discord, Feishu, Telegram, Slack
 
 DiscordAdapter (adapters/discord/index.ts)
 ├── Gateway 连接 (discord.js Client)
@@ -252,6 +271,18 @@ DiscordAdapter (adapters/discord/index.ts)
 ├── Slash Commands: 自动注册 guild commands (registerGuildCommands)
 ├── Embeds: formatDiscordReply() → 富文本 Embed + 溢出分段
 └── 回复路由: Gateway client 优先 → REST fallback
+
+FeishuAdapter (adapters/feishu/index.ts)
+├── Gateway 连接 (Lark SDK WSClient)
+│   ├── DynamoDB 分布式锁选举 (sessions 表, TTL=30s, 每 15s 续约)
+│   ├── Leader 通过 FeishuGatewayManager 管理所有飞书 Bot 的 WSClient
+│   └── Standby 每 15s 轮询锁, Leader 失效 → 30s 内接管
+├── 消息处理: @bot 提及检测, 私聊/群聊触发, 附件下载, SQS 入队
+├── Reaction 确认: 收到消息 → 添加 "OnIt" reaction → 回复完成后移除
+├── 卡片消息: Markdown 包装为 Interactive Card (schema 2.0)
+├── 文本分块: 4000 字符上限, Markdown 感知分割 (不截断代码块)
+├── 域名支持: feishu.cn (中国区) / larksuite.com (国际版)
+└── MCP 工具集: feishu_doc, feishu_wiki, feishu_drive, feishu_perm (Agent Runtime 侧)
 
 TelegramAdapter (adapters/telegram/index.ts)
 ├── start/stop: no-op (Webhook 模式)
