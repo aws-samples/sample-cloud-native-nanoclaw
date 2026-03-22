@@ -30,16 +30,18 @@ Fargate Control Plane (HTTP API):
 
 ### 8.2 各 Channel 类型对比
 
-| | Telegram | Discord | Slack | WhatsApp |
+| | Telegram | Discord | Slack | Feishu/Lark |
 |---|---|---|---|---|
-| 认证方式 | Bot Token | Bot Token + Public Key | Bot Token + Signing Secret | Access Token + App Secret |
-| Webhook 注册 | setWebhook API | Application Portal 或 API | Events API URL | Meta Business API |
-| 消息格式 | Update JSON | Interaction JSON | Event JSON | Webhook JSON |
-| 签名验证 | secret_token header | Ed25519 签名 | HMAC-SHA256 | HMAC-SHA256 |
-| 群组支持 | 是 | 是 (Guild) | 是 (Channel) | 是 |
-| 回复方式 | sendMessage API | 直接响应 / REST API | chat.postMessage | messages API |
-| 用户侧配置 | 只需 Bot Token | Token + 回调 URL 配置 | App 安装 + 权限 | Meta 开发者账号 |
-| 接入难度 | 低 | 中 | 中 | 高 |
+| 认证方式 | Bot Token | Bot Token + Public Key | Bot Token + Signing Secret | App ID + App Secret + Encrypt Key + Verification Token |
+| 连接模式 | Webhook | Gateway (WebSocket) + Leader 选举 | Webhook (Events API) | **WebSocket 长连接 (Lark SDK WSClient) + Leader 选举** |
+| 消息格式 | Update JSON | Interaction JSON | Event JSON | Event v2.0 JSON (im.message.receive_v1) |
+| 签名验证 | secret_token header | Ed25519 签名 | HMAC-SHA256 | SDK 内部处理 (WebSocket 模式无需手动验证) |
+| 群组支持 | 是 | 是 (Guild) | 是 (Channel) | 是 (群组 + 话题线程) |
+| 回复方式 | sendMessage API | REST API | chat.postMessage | im.message.create / im.message.reply (卡片消息优先) |
+| 域名支持 | — | — | — | 飞书 (feishu.cn) / Lark (larksuite.com) |
+| 特殊能力 | — | Slash Commands、Rich Embeds | — | 卡片消息、Reaction 确认、MCP 文档/知识库/云盘工具 |
+| 用户侧配置 | 只需 Bot Token | Token + 回调 URL 配置 | App 安装 + 权限 | 飞书开放平台创建自建应用 + 权限申请 |
+| 接入难度 | 低 | 中 | 中 | 中 |
 
 ### 8.3 Webhook 签名验证
 
@@ -98,7 +100,7 @@ DELETE /api/bots/{bot_id}/channels/{channel_id}
     │      ├── Telegram: getMe (验证 Bot Token)
     │      ├── Discord:  /users/@me (验证 Bot Token)
     │      ├── Slack:    auth.test (验证 Bot Token)
-    │      └── WhatsApp:  /{phone_number_id} (验证 Access Token)
+    │      └── Feishu:   /open-apis/bot/v3/info/ (验证 App ID + App Secret)
     │
     ├── 3. 更新 DynamoDB channels 表
     │      ├── 成功 → health_status="healthy", consecutive_failures=0
@@ -143,11 +145,18 @@ const healthCheckers: Record<string, (creds: any) => Promise<boolean>> = {
     const data = await res.json();
     return data.ok === true;
   },
-  whatsapp: async (creds) => {
-    const res = await fetch(
-      `https://graph.facebook.com/v18.0/${creds.phone_number_id}`,
-      { headers: { Authorization: `Bearer ${creds.access_token}` } },
-    );
+  feishu: async (creds) => {
+    // 先获取 tenant_access_token，再调用 bot info API
+    const domain = creds.domain === 'lark' ? 'open.larksuite.com' : 'open.feishu.cn';
+    const tokenRes = await fetch(`https://${domain}/open-apis/auth/v3/tenant_access_token/internal/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ app_id: creds.appId, app_secret: creds.appSecret }),
+    });
+    const { tenant_access_token } = await tokenRes.json();
+    const res = await fetch(`https://${domain}/open-apis/bot/v3/info/`, {
+      headers: { Authorization: `Bearer ${tenant_access_token}` },
+    });
     return res.ok;
   },
 };
@@ -198,7 +207,191 @@ Leader 职责:
   └── 管理 typing 指示器 (每 9s 发送直到回复完成)
 ```
 
-### 8.7 多媒体消息处理
+### 8.7 飞书 (Feishu/Lark) 渠道
+
+飞书使用 Lark SDK 的 `WSClient` WebSocket 长连接接收消息，与 Discord Gateway 采用相同的 Leader 选举机制。用户无需配置回调 URL。
+
+#### 8.7.1 凭证与配置
+
+```typescript
+// Secrets Manager: nanoclawbot/{stage}/{botId}/feishu
+interface FeishuCredentials {
+  appId: string;              // 飞书应用 App ID
+  appSecret: string;          // 飞书应用 App Secret
+  encryptKey: string;         // 事件加密密钥
+  verificationToken: string;  // 事件验证令牌
+  botOpenId?: string;         // 机器人 open_id (验证后自动填入)
+  botName?: string;           // 机器人名称
+  domain: 'feishu' | 'lark';  // feishu.cn (中国区) 或 larksuite.com (国际版)
+}
+```
+
+#### 8.7.2 WebSocket Gateway + Leader 选举
+
+飞书 Gateway 与 Discord Gateway 共享同一个 DynamoDB Leader 选举机制，Leader Task 同时持有两个 Gateway 连接：
+
+```
+Leader 选举机制 (DynamoDB 分布式锁)
+─────────────────────────────────────
+锁表:   sessions (PK=__system__, SK=feishu-gateway-leader)
+锁 TTL: 30 秒
+续约:   每 15 秒
+Standby 轮询: 每 15 秒检查锁是否过期
+
+Leader Task:
+  ├── Discord Gateway (discord.js Client) — 已有
+  ├── Feishu Gateway (Lark WSClient)      — 每个飞书 Bot 一个连接
+  └── DynamoDB 锁续约 (每 15s)
+
+Standby Tasks:
+  └── 每 15s 轮询锁，Leader 崩溃 → 30s 内接管
+```
+
+**FeishuGatewayManager 生命周期：**
+
+```
+becomeLeader()
+    │
+    ├── 1. 扫描 channels 表发现所有 channelType='feishu' 的记录
+    ├── 2. 按 botId 分组，从 Secrets Manager 加载凭证
+    ├── 3. 为每个 Bot 创建 WSClient → 注册 im.message.receive_v1 事件
+    └── 4. WSClient 自动保活和断线重连 (SDK 内部处理)
+
+动态管理:
+    ├── addBot(botId)    → 新 Channel 创建时热加载 WSClient
+    └── removeBot(botId) → Channel 删除时移除连接
+```
+
+#### 8.7.3 消息流 — 入站
+
+```
+飞书用户发送消息
+    │
+    ▼
+Lark WSClient (Leader Task) 收到 im.message.receive_v1
+    │
+    ▼
+FeishuGatewayManager → handleFeishuMessage():
+    │
+    ├── 1. 过滤 Bot 自身消息 (sender open_id == botOpenId)
+    │
+    ├── 2. 解析消息内容
+    │      ├── text: 提取纯文本，剥离 @bot 提及标记
+    │      ├── post (富文本): 提取 title + content 数组
+    │      ├── image/file: 提取 file_key，通过 REST API 下载
+    │      └── audio: 记录 "[Voice message — not yet supported]"
+    │
+    ├── 3. 触发判断
+    │      ├── 私聊 (p2p): 始终触发
+    │      └── 群聊 (group): @bot 提及 OR 有附件 OR triggerPattern 匹配
+    │
+    ├── 4. Reaction 确认
+    │      └── 给用户消息添加 "OnIt" reaction (fire-and-forget)
+    │
+    ├── 5. 附件处理
+    │      ├── 通过 im.message.resources API 下载图片/文件
+    │      └── 上传到 S3: {userId}/{botId}/attachments/{messageId}/{filename}
+    │
+    ├── 6. 群组管理
+    │      ├── groupJid = feishu#{chat_id}
+    │      ├── 配额检查 + 自动创建 Group (DynamoDB)
+    │      └── 群聊上下文：注入 group_name, member_count, recent participants
+    │
+    ├── 7. 存储 Message (DynamoDB, TTL 90 天)
+    │
+    └── 8. 入队 SQS FIFO
+           ├── MessageGroupId: {botId}#feishu#{chat_id}
+           ├── MessageDeduplicationId: {message_id}
+           └── replyContext: { feishuChatId, feishuMessageId }
+```
+
+#### 8.7.4 消息流 — 出站 (Agent 回复)
+
+```
+Agent MCP send_message() → SQS Reply Queue
+    │
+    ▼
+Reply Consumer → AdapterRegistry.get("feishu")
+    │
+    ▼
+FeishuAdapter.sendReply(ctx, text):
+    │
+    ├── 1. 加载飞书凭证 (Secrets Manager, 内存缓存)
+    │
+    ├── 2. 移除 "OnIt" reaction
+    │      └── 列出该消息的 OnIt reactions → 逐个删除 (best-effort)
+    │
+    ├── 3. 文本分块 (单块上限 4000 字符)
+    │      ├── Markdown 感知分割 — 不在代码块中间截断
+    │      ├── 优先在换行符处分割，其次空格，最后硬截断
+    │      └── 检测 ``` 计数确保代码块完整
+    │
+    ├── 4. 发送第一块 (回复模式)
+    │      ├── 优先: im.message.reply (关联原消息)
+    │      └── 回退: im.message.create (新消息)
+    │
+    ├── 5. 发送后续块 (新消息模式)
+    │
+    └── 6. 消息格式
+           ├── 优先: 卡片消息 (Interactive Card, schema 2.0)
+           │   └── Markdown 内容包装在 card template: header + markdown body
+           └── 回退: 纯文本消息 (如卡片发送失败)
+```
+
+#### 8.7.5 飞书 MCP 工具 (Agent Runtime)
+
+飞书 Channel 连接后，Agent 自动获得飞书文档生态的 MCP 工具能力。工具按 Bot 配置启用，凭证通过 SQS Payload → 环境变量传递到 Agent Runtime。
+
+```
+agent-runtime/src/feishu-tools/
+├── index.ts          # 工具注册入口 (按 enabledTools 配置条件注册)
+├── client.ts         # Lark Client 管理 (按 appId 缓存)
+├── doc-tool.ts       # feishu_doc — 文档 CRUD
+├── wiki-tool.ts      # feishu_wiki — 知识库导航
+├── drive-tool.ts     # feishu_drive — 云盘操作
+└── perm-tool.ts      # feishu_perm — 权限管理 (默认禁用)
+```
+
+| 工具 | 说明 | 主要操作 | 默认 |
+|------|------|---------|------|
+| `feishu_doc` | 文档 CRUD | read, write, append, create, list_blocks, get_block, update_block, delete_block, create_table, write_table_cells | 启用 |
+| `feishu_wiki` | 知识库导航 | spaces, nodes, get, create, move, rename | 启用 |
+| `feishu_drive` | 云盘操作 | list, info, create_folder, move, delete | 禁用 |
+| `feishu_perm` | 权限管理 | list, add, remove (敏感操作) | 禁用 |
+
+**凭证传递链路：**
+
+```
+Control Plane SQS Consumer
+    │
+    ├── 检测 channelType == 'feishu'
+    ├── 从 Secrets Manager 加载飞书凭证
+    └── 注入 Agent 环境变量:
+        FEISHU_APP_ID, FEISHU_APP_SECRET, FEISHU_DOMAIN
+        FEISHU_TOOLS_DOC=1, FEISHU_TOOLS_WIKI=1, ...
+    │
+    ▼
+Agent Runtime 启动
+    ├── 检测 FEISHU_APP_ID 环境变量存在
+    ├── 创建 Lark Client
+    └── 按配置注册 MCP 工具
+```
+
+**典型工作流示例：**
+
+```
+用户: "帮我看一下这个文档的内容 https://xxx.feishu.cn/docx/ABC123"
+    ↓
+Agent 调用 feishu_doc(action="read", document_id="ABC123")
+    ↓
+Agent 理解内容，生成修改建议
+    ↓
+Agent 调用 feishu_doc(action="append", document_id="ABC123", content="## 修改建议\n...")
+    ↓
+Agent 回复用户: "已将修改建议追加到文档末尾"
+```
+
+### 8.8 多媒体消息处理
 
 Telegram/Discord/Slack/WhatsApp 消息可能包含图片、文件、语音、视频。当前核心流程只处理文本，多媒体需要额外的处理链路。
 
