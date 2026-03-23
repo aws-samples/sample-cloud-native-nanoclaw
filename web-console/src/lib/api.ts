@@ -42,7 +42,19 @@ export interface Bot {
   model?: string;
   /** @deprecated */
   modelProvider?: 'bedrock' | 'anthropic-api';
+  toolWhitelist?: ToolWhitelistConfig;
   createdAt: string;
+}
+
+export interface ToolWhitelistConfig {
+  enabled: boolean;
+  allowedMcpTools: string[];
+  allowedSkills: string[];
+}
+
+export interface AvailableTools {
+  mcpTools: Array<{ name: string; description: string }>;
+  skills: Array<{ name: string; description: string }>;
 }
 
 export interface ChannelConfig {
@@ -151,6 +163,7 @@ export const bots = {
   create: (data: CreateBotRequest) => request<Bot>('/bots', { method: 'POST', body: JSON.stringify(data) }),
   update: (botId: string, data: Partial<Bot>) => request<Bot>(`/bots/${botId}`, { method: 'PUT', body: JSON.stringify(data) }),
   delete: (botId: string) => request<void>(`/bots/${botId}`, { method: 'DELETE' }),
+  availableTools: () => request<AvailableTools>('/bots/available-tools'),
 };
 
 // Channel API

@@ -77,6 +77,7 @@
       "tasks": "任务",
       "memory": "记忆",
       "files": "文件",
+      "tools": "工具",
       "settings": "设置"
     },
     "overview": {
@@ -150,6 +151,21 @@
       "size": "大小：{{size}}",
       "modified": "修改时间：{{date}}",
       "failedToLoad": "加载文件失败"
+    },
+    "tools": {
+      "title": "工具白名单",
+      "description": "控制此机器人可以使用哪些工具和技能。关闭时所有工具均可用。",
+      "enabled": "白名单已启用",
+      "disabled": "白名单已关闭（所有工具可用）",
+      "mcpTools": "MCP 工具",
+      "skills": "技能",
+      "customSkills": "自定义技能",
+      "customSkillPlaceholder": "输入技能名称...",
+      "add": "添加",
+      "save": "保存更改",
+      "saving": "保存中...",
+      "saved": "工具白名单已保存",
+      "error": "保存工具白名单失败"
     },
     "settings": {
       "triggerPattern": "触发模式",

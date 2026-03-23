@@ -449,6 +449,7 @@ export async function updateBot(
     'modelProvider',
     'status',
     'containerConfig',
+    'toolWhitelist',
   ] as const;
 
   for (const field of allowedFields) {

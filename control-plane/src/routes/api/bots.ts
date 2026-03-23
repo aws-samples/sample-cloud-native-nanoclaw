@@ -33,6 +33,11 @@ const updateBotSchema = z.object({
   providerId: z.string().min(1).max(100).optional(),
   modelId: z.string().min(1).max(200).optional(),
   status: z.enum(['active', 'paused', 'deleted']).optional(),
+  toolWhitelist: z.object({
+    enabled: z.boolean(),
+    allowedMcpTools: z.array(z.string().max(100)).max(50),
+    allowedSkills: z.array(z.string().max(100)).max(50),
+  }).optional(),
 });
 
 const validTransitions: Record<string, string[]> = {
@@ -92,6 +97,32 @@ export const botsRoutes: FastifyPluginAsync = async (app) => {
 
     await createBot(bot);
     return reply.status(201).send(bot);
+  });
+
+  // Available tools catalog (for whitelist UI)
+  app.get('/available-tools', async () => {
+    return {
+      mcpTools: [
+        { name: 'send_message', description: 'Send a message to the channel' },
+        { name: 'send_file', description: 'Send a file to the channel' },
+        { name: 'schedule_task', description: 'Schedule a recurring task' },
+        { name: 'list_tasks', description: 'List scheduled tasks' },
+        { name: 'pause_task', description: 'Pause a scheduled task' },
+        { name: 'resume_task', description: 'Resume a paused task' },
+        { name: 'cancel_task', description: 'Cancel a scheduled task' },
+        { name: 'update_task', description: 'Update a scheduled task' },
+      ],
+      skills: [
+        { name: 'agent-browser', description: 'Browser automation' },
+        { name: 'docx', description: 'Word document creation' },
+        { name: 'find-skills', description: 'Discover available skills' },
+        { name: 'pdf', description: 'PDF manipulation' },
+        { name: 'pptx', description: 'PowerPoint creation' },
+        { name: 'skill-creator', description: 'Create new skills' },
+        { name: 'skill-development', description: 'Skill development tools' },
+        { name: 'xlsx', description: 'Excel spreadsheet creation' },
+      ],
+    };
   });
 
   // Get a specific bot

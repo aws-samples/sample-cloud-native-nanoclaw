@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import {
   LayoutDashboard, Radio, MessageSquare, Clock, Brain,
   FolderOpen, Settings as SettingsIcon, Plus, Trash2, ExternalLink,
-  Play, Pause, Save, AlertTriangle,
+  Play, Pause, Save, AlertTriangle, Shield,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import TabNav from '../components/TabNav';
@@ -16,6 +16,7 @@ import {
   providers as providersApi,
   Bot, ChannelConfig, Group, ScheduledTask,
   type ProviderPublic,
+  type AvailableTools, type ToolWhitelistConfig,
 } from '../lib/api';
 
 /* ── Tab icon map (labels are i18n'd inside BotDetail) ─────────────── */
@@ -27,6 +28,7 @@ const tabIcons: Record<string, React.ReactNode> = {
   tasks: <Clock size={16} />,
   memory: <Brain size={16} />,
   files: <FolderOpen size={16} />,
+  tools: <Shield size={16} />,
   settings: <SettingsIcon size={16} />,
 };
 
@@ -628,6 +630,200 @@ function MemoryTab({ botId }: { botId: string }) {
   );
 }
 
+/* ── Tools tab ────────────────────────────────────────────────────── */
+
+function ToolsTab({
+  bot, botId, loadData,
+}: {
+  bot: Bot;
+  botId: string;
+  loadData: () => void;
+}) {
+  const { t } = useTranslation();
+  const [enabled, setEnabled] = useState(bot.toolWhitelist?.enabled ?? false);
+  const [allowedMcpTools, setAllowedMcpTools] = useState<string[]>(bot.toolWhitelist?.allowedMcpTools ?? []);
+  const [allowedSkills, setAllowedSkills] = useState<string[]>(bot.toolWhitelist?.allowedSkills ?? []);
+  const [customSkill, setCustomSkill] = useState('');
+  const [catalog, setCatalog] = useState<AvailableTools | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState<'saved' | 'error' | null>(null);
+
+  useEffect(() => {
+    botsApi.availableTools().then(setCatalog).catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    setEnabled(bot.toolWhitelist?.enabled ?? false);
+    setAllowedMcpTools(bot.toolWhitelist?.allowedMcpTools ?? []);
+    setAllowedSkills(bot.toolWhitelist?.allowedSkills ?? []);
+  }, [bot.toolWhitelist]);
+
+  function toggleMcpTool(name: string) {
+    setAllowedMcpTools(prev =>
+      prev.includes(name) ? prev.filter(t => t !== name) : [...prev, name]
+    );
+  }
+
+  function toggleSkill(name: string) {
+    setAllowedSkills(prev =>
+      prev.includes(name) ? prev.filter(s => s !== name) : [...prev, name]
+    );
+  }
+
+  function addCustomSkill() {
+    const trimmed = customSkill.trim();
+    if (trimmed && !allowedSkills.includes(trimmed)) {
+      setAllowedSkills(prev => [...prev, trimmed]);
+      setCustomSkill('');
+    }
+  }
+
+  const catalogSkillNames = catalog?.skills.map(s => s.name) ?? [];
+  const customSkills = allowedSkills.filter(s => !catalogSkillNames.includes(s));
+
+  async function saveWhitelist() {
+    setSaving(true);
+    setStatus(null);
+    try {
+      const toolWhitelist: ToolWhitelistConfig = {
+        enabled,
+        allowedMcpTools,
+        allowedSkills,
+      };
+      await botsApi.update(botId, { toolWhitelist } as Partial<Bot>);
+      setStatus('saved');
+      setTimeout(() => setStatus(null), 3000);
+      loadData();
+    } catch {
+      setStatus('error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Enable/disable toggle */}
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">{t('botDetail.tools.title')}</h2>
+            <p className="text-sm text-slate-500 mt-1">{t('botDetail.tools.description')}</p>
+          </div>
+          <button
+            onClick={() => setEnabled(!enabled)}
+            className={clsx(
+              'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+              enabled ? 'bg-accent-500' : 'bg-slate-300',
+            )}
+          >
+            <span
+              className={clsx(
+                'inline-block h-4 w-4 rounded-full bg-white transition-transform',
+                enabled ? 'translate-x-6' : 'translate-x-1',
+              )}
+            />
+          </button>
+        </div>
+        <p className="text-sm mt-2 font-medium">
+          {enabled
+            ? <span className="text-accent-600">{t('botDetail.tools.enabled')}</span>
+            : <span className="text-slate-400">{t('botDetail.tools.disabled')}</span>
+          }
+        </p>
+      </div>
+
+      {/* MCP Tools */}
+      <div className={clsx('bg-white rounded-xl shadow-sm border border-slate-200 p-5', !enabled && 'opacity-50 pointer-events-none')}>
+        <h3 className="text-sm font-semibold text-slate-900 mb-3">{t('botDetail.tools.mcpTools')}</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+          {catalog?.mcpTools.map(tool => (
+            <label key={tool.name} className="flex items-center gap-2 cursor-pointer" title={tool.description}>
+              <input
+                type="checkbox"
+                checked={allowedMcpTools.includes(tool.name)}
+                onChange={() => toggleMcpTool(tool.name)}
+                className="rounded border-slate-300 text-accent-500 focus:ring-accent-500"
+              />
+              <span className="text-sm text-slate-700 font-mono">{tool.name}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* Skills */}
+      <div className={clsx('bg-white rounded-xl shadow-sm border border-slate-200 p-5', !enabled && 'opacity-50 pointer-events-none')}>
+        <h3 className="text-sm font-semibold text-slate-900 mb-3">{t('botDetail.tools.skills')}</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+          {catalog?.skills.map(skill => (
+            <label key={skill.name} className="flex items-center gap-2 cursor-pointer" title={skill.description}>
+              <input
+                type="checkbox"
+                checked={allowedSkills.includes(skill.name)}
+                onChange={() => toggleSkill(skill.name)}
+                className="rounded border-slate-300 text-accent-500 focus:ring-accent-500"
+              />
+              <span className="text-sm text-slate-700 font-mono">{skill.name}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* Custom skills */}
+      <div className={clsx('bg-white rounded-xl shadow-sm border border-slate-200 p-5', !enabled && 'opacity-50 pointer-events-none')}>
+        <h3 className="text-sm font-semibold text-slate-900 mb-3">{t('botDetail.tools.customSkills')}</h3>
+        <div className="flex gap-2 mb-3">
+          <input
+            value={customSkill}
+            onChange={e => setCustomSkill(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCustomSkill(); } }}
+            placeholder={t('botDetail.tools.customSkillPlaceholder')}
+            className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 focus:outline-none"
+          />
+          <button
+            onClick={addCustomSkill}
+            disabled={!customSkill.trim()}
+            className="rounded-lg bg-slate-100 text-slate-700 px-4 py-2 text-sm font-medium hover:bg-slate-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {t('botDetail.tools.add')}
+          </button>
+        </div>
+        {customSkills.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {customSkills.map(name => (
+              <span
+                key={name}
+                className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-slate-100 text-sm font-mono text-slate-700"
+              >
+                {name}
+                <button
+                  onClick={() => setAllowedSkills(prev => prev.filter(s => s !== name))}
+                  className="text-slate-400 hover:text-red-500 transition-colors"
+                >
+                  &times;
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Save button */}
+      <div className="flex items-center gap-3">
+        <button
+          onClick={saveWhitelist}
+          disabled={saving}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-accent-500 text-white px-5 py-2.5 text-sm font-medium hover:bg-accent-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <Save size={16} /> {saving ? t('botDetail.tools.saving') : t('botDetail.tools.save')}
+        </button>
+        {status === 'saved' && <span className="text-sm text-emerald-600">{t('botDetail.tools.saved')}</span>}
+        {status === 'error' && <span className="text-sm text-red-600">{t('botDetail.tools.error')}</span>}
+      </div>
+    </div>
+  );
+}
+
 /* ── Settings tab ─────────────────────────────────────────────────── */
 
 function SettingsTab({
@@ -868,6 +1064,9 @@ export default function BotDetail() {
             </div>
             <FileBrowser botId={botId!} />
           </div>
+        )}
+        {activeTab === 'tools' && (
+          <ToolsTab bot={bot} botId={botId!} loadData={loadData} />
         )}
         {activeTab === 'settings' && (
           <SettingsTab bot={bot} botId={botId!} loadData={loadData} />

@@ -77,6 +77,7 @@
       "tasks": "Tasks",
       "memory": "Memory",
       "files": "Files",
+      "tools": "Tools",
       "settings": "Settings"
     },
     "overview": {
@@ -150,6 +151,21 @@
       "size": "Size: {{size}}",
       "modified": "Modified: {{date}}",
       "failedToLoad": "Failed to load files"
+    },
+    "tools": {
+      "title": "Tool Whitelist",
+      "description": "Control which tools and skills this bot can use. When disabled, all tools are available.",
+      "enabled": "Whitelist Enabled",
+      "disabled": "Whitelist Disabled (all tools allowed)",
+      "mcpTools": "MCP Tools",
+      "skills": "Skills",
+      "customSkills": "Custom Skills",
+      "customSkillPlaceholder": "Enter skill name...",
+      "add": "Add",
+      "save": "Save Changes",
+      "saving": "Saving...",
+      "saved": "Tool whitelist saved",
+      "error": "Failed to save tool whitelist"
     },
     "settings": {
       "triggerPattern": "Trigger Pattern",

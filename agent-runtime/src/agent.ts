@@ -36,6 +36,7 @@ import { buildAppendContent } from './system-prompt.js';
 import { getScopedClients } from './scoped-credentials.js';
 import { setBusy, setIdle } from './server.js';
 import { startCredentialProxy, type CredentialProxy } from './credential-proxy.js';
+import { createToolWhitelistHook } from './tool-whitelist.js';
 
 const SESSION_BUCKET = process.env.SESSION_BUCKET || '';
 const DEFAULT_MODEL = 'global.anthropic.claude-sonnet-4-6';
@@ -394,6 +395,11 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
           },
         },
         hooks: {
+          ...(payload.toolWhitelist?.enabled && {
+            PreToolUse: [{
+              hooks: [createToolWhitelistHook(payload, logger)],
+            }],
+          }),
           PreCompact: [{ hooks: [createPreCompactHook(params.botName)] }],
         },
       },

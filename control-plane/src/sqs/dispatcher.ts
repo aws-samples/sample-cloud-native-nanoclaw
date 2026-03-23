@@ -365,6 +365,7 @@ async function dispatchMessage(
       ...providerCreds,
       ...(forceNewSession && { forceNewSession: true }),
       ...(proxyRules.length > 0 && { proxyRules }),
+      ...(bot.toolWhitelist && { toolWhitelist: bot.toolWhitelist }),
     };
 
     logger.info(
@@ -536,6 +537,7 @@ async function dispatchTask(
     ...(proxyRulesTask.length > 0 && {
       proxyRules: proxyRulesTask,
     }),
+    ...(bot.toolWhitelist && { toolWhitelist: bot.toolWhitelist }),
   };
 
   const result = await invokeAgent(invocationPayload, logger);
