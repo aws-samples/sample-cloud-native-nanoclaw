@@ -382,8 +382,20 @@ EXISTING_ADMIN=$(aws cognito-idp admin-get-user \
   --username "$ADMIN_EMAIL" \
   --region "$REGION" 2>/dev/null || echo "")
 
+# Ensure clawbot-admins group exists (idempotent)
+aws cognito-idp create-group \
+  --user-pool-id "$COGNITO_USER_POOL_ID" \
+  --group-name "clawbot-admins" \
+  --description "NanoClaw admin users" \
+  --region "$REGION" 2>/dev/null || true
+
 if [ -n "$EXISTING_ADMIN" ]; then
-  log "  Admin user already exists: ${ADMIN_EMAIL} — skipping"
+  log "  Admin user already exists: ${ADMIN_EMAIL} — ensuring admin group membership"
+  aws cognito-idp admin-add-user-to-group \
+    --user-pool-id "$COGNITO_USER_POOL_ID" \
+    --username "$ADMIN_EMAIL" \
+    --group-name "clawbot-admins" \
+    --region "$REGION" 2>/dev/null || true
 else
   log "  Creating admin user: ${ADMIN_EMAIL}"
 
@@ -435,6 +447,13 @@ else
         createdAt:        {S: $now},
         lastLogin:        {S: $now}
       }')" 2>/dev/null || log "  WARN: DynamoDB record may already exist"
+
+  # Add admin to clawbot-admins group
+  aws cognito-idp admin-add-user-to-group \
+    --user-pool-id "$COGNITO_USER_POOL_ID" \
+    --username "$ADMIN_EMAIL" \
+    --group-name "clawbot-admins" \
+    --region "$REGION" || log "  WARN: Failed to add admin to group"
 
   log "  Admin user created: ${ADMIN_EMAIL} (userId: ${ADMIN_USER_ID})"
 fi
