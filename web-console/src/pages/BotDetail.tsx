@@ -640,7 +640,8 @@ function ToolsTab({
   loadData: () => void;
 }) {
   const { t } = useTranslation();
-  const [enabled, setEnabled] = useState(bot.toolWhitelist?.enabled ?? false);
+  const [mcpToolsEnabled, setMcpToolsEnabled] = useState(bot.toolWhitelist?.mcpToolsEnabled ?? false);
+  const [skillsEnabled, setSkillsEnabled] = useState(bot.toolWhitelist?.skillsEnabled ?? false);
   const [allowedMcpTools, setAllowedMcpTools] = useState<string[]>(bot.toolWhitelist?.allowedMcpTools ?? []);
   const [allowedSkills, setAllowedSkills] = useState<string[]>(bot.toolWhitelist?.allowedSkills ?? []);
   const [customSkill, setCustomSkill] = useState('');
@@ -653,7 +654,8 @@ function ToolsTab({
   }, []);
 
   useEffect(() => {
-    setEnabled(bot.toolWhitelist?.enabled ?? false);
+    setMcpToolsEnabled(bot.toolWhitelist?.mcpToolsEnabled ?? false);
+    setSkillsEnabled(bot.toolWhitelist?.skillsEnabled ?? false);
     setAllowedMcpTools(bot.toolWhitelist?.allowedMcpTools ?? []);
     setAllowedSkills(bot.toolWhitelist?.allowedSkills ?? []);
   }, [bot.toolWhitelist]);
@@ -686,7 +688,8 @@ function ToolsTab({
     setStatus(null);
     try {
       const toolWhitelist: ToolWhitelistConfig = {
-        enabled,
+        mcpToolsEnabled,
+        skillsEnabled,
         allowedMcpTools,
         allowedSkills,
       };
@@ -703,40 +706,30 @@ function ToolsTab({
 
   return (
     <div className="space-y-6">
-      {/* Enable/disable toggle */}
+      {/* Description */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900">{t('botDetail.tools.title')}</h2>
-            <p className="text-sm text-slate-500 mt-1">{t('botDetail.tools.description')}</p>
-          </div>
-          <button
-            onClick={() => setEnabled(!enabled)}
-            className={clsx(
-              'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
-              enabled ? 'bg-accent-500' : 'bg-slate-300',
-            )}
-          >
-            <span
-              className={clsx(
-                'inline-block h-4 w-4 rounded-full bg-white transition-transform',
-                enabled ? 'translate-x-6' : 'translate-x-1',
-              )}
-            />
-          </button>
-        </div>
-        <p className="text-sm mt-2 font-medium">
-          {enabled
-            ? <span className="text-accent-600">{t('botDetail.tools.enabled')}</span>
-            : <span className="text-slate-400">{t('botDetail.tools.disabled')}</span>
-          }
-        </p>
+        <h2 className="text-base font-semibold text-slate-900">{t('botDetail.tools.title')}</h2>
+        <p className="text-sm text-slate-500 mt-1">{t('botDetail.tools.description')}</p>
       </div>
 
-      {/* MCP Tools */}
-      <div className={clsx('bg-white rounded-xl shadow-sm border border-slate-200 p-5', !enabled && 'opacity-50 pointer-events-none')}>
-        <h3 className="text-sm font-semibold text-slate-900 mb-3">{t('botDetail.tools.mcpTools')}</h3>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+      {/* MCP Tools — with its own toggle */}
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-slate-900">{t('botDetail.tools.mcpTools')}</h3>
+          <button
+            onClick={() => setMcpToolsEnabled(!mcpToolsEnabled)}
+            className={clsx(
+              'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+              mcpToolsEnabled ? 'bg-accent-500' : 'bg-slate-300',
+            )}
+          >
+            <span className={clsx('inline-block h-4 w-4 rounded-full bg-white transition-transform', mcpToolsEnabled ? 'translate-x-6' : 'translate-x-1')} />
+          </button>
+        </div>
+        <p className="text-xs text-slate-400 mb-3">
+          {mcpToolsEnabled ? t('botDetail.tools.mcpToolsEnabled') : t('botDetail.tools.mcpToolsDisabled')}
+        </p>
+        <div className={clsx('grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3', !mcpToolsEnabled && 'opacity-50 pointer-events-none')}>
           {catalog?.mcpTools.map(tool => (
             <label key={tool.name} className="flex items-center gap-2 cursor-pointer" title={tool.description}>
               <input
@@ -751,10 +744,24 @@ function ToolsTab({
         </div>
       </div>
 
-      {/* Skills */}
-      <div className={clsx('bg-white rounded-xl shadow-sm border border-slate-200 p-5', !enabled && 'opacity-50 pointer-events-none')}>
-        <h3 className="text-sm font-semibold text-slate-900 mb-3">{t('botDetail.tools.skills')}</h3>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+      {/* Skills — with its own toggle */}
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold text-slate-900">{t('botDetail.tools.skills')}</h3>
+          <button
+            onClick={() => setSkillsEnabled(!skillsEnabled)}
+            className={clsx(
+              'relative inline-flex h-6 w-11 items-center rounded-full transition-colors',
+              skillsEnabled ? 'bg-accent-500' : 'bg-slate-300',
+            )}
+          >
+            <span className={clsx('inline-block h-4 w-4 rounded-full bg-white transition-transform', skillsEnabled ? 'translate-x-6' : 'translate-x-1')} />
+          </button>
+        </div>
+        <p className="text-xs text-slate-400 mb-3">
+          {skillsEnabled ? t('botDetail.tools.skillsEnabled') : t('botDetail.tools.skillsDisabled')}
+        </p>
+        <div className={clsx('grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3', !skillsEnabled && 'opacity-50 pointer-events-none')}>
           {catalog?.skills.map(skill => (
             <label key={skill.name} className="flex items-center gap-2 cursor-pointer" title={skill.description}>
               <input
@@ -770,7 +777,7 @@ function ToolsTab({
       </div>
 
       {/* Custom skills */}
-      <div className={clsx('bg-white rounded-xl shadow-sm border border-slate-200 p-5', !enabled && 'opacity-50 pointer-events-none')}>
+      <div className={clsx('bg-white rounded-xl shadow-sm border border-slate-200 p-5', !skillsEnabled && 'opacity-50 pointer-events-none')}>
         <h3 className="text-sm font-semibold text-slate-900 mb-3">{t('botDetail.tools.customSkills')}</h3>
         <div className="flex gap-2 mb-3">
           <input

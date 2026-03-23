@@ -17,7 +17,7 @@ export function createToolWhitelistHook(
     const whitelist = payload.toolWhitelist!;
 
     // Check Skill tool — inspect the skill name inside tool_input
-    if (toolName === 'Skill') {
+    if (whitelist.skillsEnabled && toolName === 'Skill') {
       const requestedSkill = (toolInput.skill as string) || '';
       if (!whitelist.allowedSkills.includes(requestedSkill)) {
         logger.warn({
@@ -40,7 +40,7 @@ export function createToolWhitelistHook(
     }
 
     // Check MCP tools — format is "mcp__nanoclawbot__<toolName>"
-    if (toolName.startsWith(MCP_PREFIX)) {
+    if (whitelist.mcpToolsEnabled && toolName.startsWith(MCP_PREFIX)) {
       const mcpToolName = toolName.slice(MCP_PREFIX.length);
       if (!whitelist.allowedMcpTools.includes(mcpToolName)) {
         logger.warn({

@@ -108,7 +108,8 @@ export interface BotContainerConfig {
 }
 
 export interface ToolWhitelistConfig {
-  enabled: boolean;
+  mcpToolsEnabled: boolean;
+  skillsEnabled: boolean;
   allowedMcpTools: string[];
   allowedSkills: string[];
 }

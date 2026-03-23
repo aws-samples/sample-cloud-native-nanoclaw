@@ -395,7 +395,7 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
           },
         },
         hooks: {
-          ...(payload.toolWhitelist?.enabled && {
+          ...((payload.toolWhitelist?.mcpToolsEnabled || payload.toolWhitelist?.skillsEnabled) && {
             PreToolUse: [{
               hooks: [createToolWhitelistHook(payload, logger)],
             }],

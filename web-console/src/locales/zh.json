@@ -153,12 +153,14 @@
       "failedToLoad": "加载文件失败"
     },
     "tools": {
-      "title": "工具白名单",
-      "description": "控制此机器人可以使用哪些工具和技能。关闭时所有工具均可用。",
-      "enabled": "白名单已启用",
-      "disabled": "白名单已关闭（所有工具可用）",
+      "title": "工具和技能白名单",
+      "description": "分别控制此机器人可以使用的 MCP 工具和技能。每个类别有独立开关——关闭时该类别下所有项目均可用。",
       "mcpTools": "MCP 工具",
+      "mcpToolsEnabled": "MCP 工具白名单已启用——仅允许勾选的工具",
+      "mcpToolsDisabled": "MCP 工具白名单已关闭——所有 MCP 工具可用",
       "skills": "技能",
+      "skillsEnabled": "技能白名单已启用——仅允许勾选的技能",
+      "skillsDisabled": "技能白名单已关闭——所有技能可用",
       "customSkills": "自定义技能",
       "customSkillPlaceholder": "输入技能名称...",
       "add": "添加",

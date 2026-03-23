@@ -153,12 +153,14 @@
       "failedToLoad": "Failed to load files"
     },
     "tools": {
-      "title": "Tool Whitelist",
-      "description": "Control which tools and skills this bot can use. When disabled, all tools are available.",
-      "enabled": "Whitelist Enabled",
-      "disabled": "Whitelist Disabled (all tools allowed)",
+      "title": "Tool & Skill Whitelist",
+      "description": "Control which MCP tools and skills this bot can use. Each section has its own toggle — when off, all items in that category are allowed.",
       "mcpTools": "MCP Tools",
+      "mcpToolsEnabled": "MCP tool whitelist enabled — only checked tools allowed",
+      "mcpToolsDisabled": "MCP tool whitelist disabled — all MCP tools allowed",
       "skills": "Skills",
+      "skillsEnabled": "Skill whitelist enabled — only checked skills allowed",
+      "skillsDisabled": "Skill whitelist disabled — all skills allowed",
       "customSkills": "Custom Skills",
       "customSkillPlaceholder": "Enter skill name...",
       "add": "Add",

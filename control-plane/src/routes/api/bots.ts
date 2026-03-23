@@ -34,7 +34,8 @@ const updateBotSchema = z.object({
   modelId: z.string().min(1).max(200).optional(),
   status: z.enum(['active', 'paused', 'deleted']).optional(),
   toolWhitelist: z.object({
-    enabled: z.boolean(),
+    mcpToolsEnabled: z.boolean(),
+    skillsEnabled: z.boolean(),
     allowedMcpTools: z.array(z.string().max(100)).max(50),
     allowedSkills: z.array(z.string().max(100)).max(50),
   }).optional(),
