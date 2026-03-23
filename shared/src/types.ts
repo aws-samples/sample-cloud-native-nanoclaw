@@ -97,6 +97,7 @@ export interface Bot {
   modelProvider?: ModelProvider;
   status: 'created' | 'active' | 'paused' | 'deleted';
   containerConfig?: BotContainerConfig;
+  toolWhitelist?: ToolWhitelistConfig;
   createdAt: string;
   updatedAt: string;
 }
@@ -104,6 +105,12 @@ export interface Bot {
 export interface BotContainerConfig {
   maxTurns?: number;
   timeout?: number;
+}
+
+export interface ToolWhitelistConfig {
+  enabled: boolean;
+  allowedMcpTools: string[];
+  allowedSkills: string[];
 }
 
 // --- Channel (DynamoDB: channels table, PK=botId, SK=channelType#channelId) ---
@@ -262,6 +269,8 @@ export interface InvocationPayload {
   forceNewSession?: boolean;
   /** Credential proxy rules — injected by control-plane from user config */
   proxyRules?: InvocationProxyRule[];
+  /** Per-bot tool/skill whitelist config */
+  toolWhitelist?: ToolWhitelistConfig;
 }
 
 /** Proxy rule passed through invocation payload (secrets included). */
@@ -364,6 +373,7 @@ export interface UpdateBotRequest {
   providerId?: string;
   modelId?: string;
   status?: 'active' | 'paused' | 'deleted';
+  toolWhitelist?: ToolWhitelistConfig;
 }
 
 export interface UpdateTaskRequest {
