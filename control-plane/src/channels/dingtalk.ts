@@ -1,4 +1,4 @@
-// ClawBot Cloud — DingTalk API Client
+// NanoClaw on Cloud — DingTalk API Client
 // Wraps DingTalk Open API (v1.0) for sending messages and verifying credentials
 // Uses native fetch (raw HTTP calls), following the same pattern as feishu.ts and slack.ts.
 
@@ -12,6 +12,7 @@ interface CachedToken {
 }
 
 const tokenCache = new Map<string, CachedToken>();
+const pendingTokenRequests = new Map<string, Promise<string>>();
 const TOKEN_SAFETY_MARGIN_MS = 5 * 60 * 1000; // refresh 5 min before expiry
 
 /**
@@ -19,6 +20,7 @@ const TOKEN_SAFETY_MARGIN_MS = 5 * 60 * 1000; // refresh 5 min before expiry
  * POST /v1.0/oauth2/accessToken
  *
  * Token is cached in-memory and refreshed 5 minutes before expiry.
+ * Concurrent requests for the same clientId are deduplicated.
  */
 export async function getAccessToken(clientId: string, clientSecret: string): Promise<string> {
   const cached = tokenCache.get(clientId);
@@ -26,6 +28,18 @@ export async function getAccessToken(clientId: string, clientSecret: string): Pr
     return cached.token;
   }
 
+  // Deduplicate concurrent requests for the same clientId
+  const pending = pendingTokenRequests.get(clientId);
+  if (pending) return pending;
+
+  const promise = fetchAccessToken(clientId, clientSecret).finally(() => {
+    pendingTokenRequests.delete(clientId);
+  });
+  pendingTokenRequests.set(clientId, promise);
+  return promise;
+}
+
+async function fetchAccessToken(clientId: string, clientSecret: string): Promise<string> {
   const url = `${DINGTALK_API}/v1.0/oauth2/accessToken`;
   const resp = await fetch(url, {
     method: 'POST',
@@ -75,10 +89,11 @@ export async function verifyCredentials(
 /**
  * Send a plain text message to a 1:1 conversation.
  * POST /v1.0/robot/oToMessages/batchSend
+ * Requires userIds (not openConversationId).
  */
 export async function sendMessage(
   accessToken: string,
-  openConversationId: string,
+  userIds: string[],
   text: string,
   robotCode: string,
 ): Promise<void> {
@@ -91,9 +106,9 @@ export async function sendMessage(
     },
     body: JSON.stringify({
       robotCode,
+      userIds,
       msgParam: JSON.stringify({ content: text }),
       msgKey: 'sampleText',
-      openConversationId,
     }),
   });
 
@@ -108,10 +123,11 @@ export async function sendMessage(
 /**
  * Send a markdown message to a 1:1 conversation.
  * POST /v1.0/robot/oToMessages/batchSend
+ * Requires userIds (not openConversationId).
  */
 export async function sendMarkdownMessage(
   accessToken: string,
-  openConversationId: string,
+  userIds: string[],
   title: string,
   text: string,
   robotCode: string,
@@ -125,9 +141,9 @@ export async function sendMarkdownMessage(
     },
     body: JSON.stringify({
       robotCode,
+      userIds,
       msgParam: JSON.stringify({ title, text }),
       msgKey: 'sampleMarkdown',
-      openConversationId,
     }),
   });
 

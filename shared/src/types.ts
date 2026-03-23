@@ -220,6 +220,7 @@ export interface SqsReplyContext {
   dingtalkMsgId?: string;
   dingtalkSessionWebhook?: string;
   dingtalkIsGroup?: boolean;
+  dingtalkSenderStaffId?: string;
 }
 
 export interface SqsInboundPayload {

@@ -25,6 +25,7 @@ export interface ReplyContext {
   dingtalkMsgId?: string;
   dingtalkSessionWebhook?: string;
   dingtalkIsGroup?: boolean;
+  dingtalkSenderStaffId?: string;
 }
 
 // --- Reply Options ---

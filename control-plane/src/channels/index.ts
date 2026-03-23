@@ -27,8 +27,8 @@ export async function sendChannelMessage(
     case 'feishu':
       return feishu.sendFeishuMessage(credentials.appId, credentials.appSecret, chatId, text, (credentials.domain as feishu.FeishuDomain) || 'feishu');
     case 'dingtalk':
-      // DingTalk messages are sent via the adapter, not this legacy path
-      break;
+      throw new Error('DingTalk messages must be sent via DingTalkAdapter.sendReply(), not sendChannelMessage()');
+
     default:
       throw new Error(`Unsupported channel type: ${channelType}`);
   }

@@ -24,7 +24,7 @@ import type pino from 'pino';
 import type { ChannelConfig } from '@clawbot/shared';
 import { config } from '../config.js';
 import { handleDingTalkMessage } from './message-handler.js';
-import type { DingTalkMessageData } from './message-handler.js';
+import { parseDingTalkMessage } from './message-handler.js';
 
 // -- Leader Election Constants ------------------------------------------------
 
@@ -53,8 +53,6 @@ const secretsMgr = new SecretsManagerClient({ region: config.region });
 interface DingTalkBotConnection {
   channel: ChannelConfig;
   client: DWClient;
-  clientId: string;
-  clientSecret: string;
 }
 
 // -- DingTalkGatewayManager ---------------------------------------------------
@@ -125,9 +123,10 @@ export class DingTalkGatewayManager {
 
   /**
    * Dynamically add a new bot connection (called when a new dingtalk channel is created).
+   * Only the leader instance creates connections; standby instances skip.
    */
   async addBot(botId: string): Promise<void> {
-    if (this.stopped) return;
+    if (this.stopped || !this.isLeader) return;
     if (this.connections.has(botId)) {
       this.logger.info({ botId }, 'DingTalk bot already connected, skipping');
       return;
@@ -220,8 +219,13 @@ export class DingTalkGatewayManager {
         }),
       );
       return true;
-    } catch {
-      this.logger.warn('Failed to renew DingTalk leader lock, stepping down');
+    } catch (err: unknown) {
+      const isConditionalFail = (err as { name?: string }).name === 'ConditionalCheckFailedException';
+      if (isConditionalFail) {
+        this.logger.warn('DingTalk leader lock taken by another instance, stepping down');
+      } else {
+        this.logger.error({ err }, 'DingTalk leader lock renewal failed due to unexpected error, stepping down');
+      }
       return false;
     }
   }
@@ -237,8 +241,11 @@ export class DingTalkGatewayManager {
         }),
       );
       this.logger.info('DingTalk leader lock released');
-    } catch {
-      // Already expired or taken by another instance
+    } catch (err: unknown) {
+      const isConditionalFail = (err as { name?: string }).name === 'ConditionalCheckFailedException';
+      if (!isConditionalFail) {
+        this.logger.error({ err }, 'Failed to release DingTalk leader lock due to unexpected error');
+      }
     }
   }
 
@@ -252,7 +259,8 @@ export class DingTalkGatewayManager {
       );
       if (!res.Item) return true;
       return (res.Item.expiresAt as number) < Math.floor(Date.now() / 1000);
-    } catch {
+    } catch (err) {
+      this.logger.error({ err }, 'Failed to check DingTalk leader lock status, assuming expired');
       return true;
     }
   }
@@ -295,6 +303,11 @@ export class DingTalkGatewayManager {
       const ok = await this.renewLock();
       if (!ok) {
         this.logger.warn('Lost DingTalk leader lock, stopping connections');
+        // Clear the renew timer FIRST to prevent re-entry
+        if (this.renewTimer) {
+          clearInterval(this.renewTimer);
+          this.renewTimer = null;
+        }
         for (const [botId, conn] of this.connections) {
           try {
             conn.client.disconnect();
@@ -317,6 +330,16 @@ export class DingTalkGatewayManager {
   // -- Standby ----------------------------------------------------------------
 
   private startStandbyPoll(): void {
+    // Clear any existing timers to prevent duplicate polling
+    if (this.initialPollTimer) {
+      clearTimeout(this.initialPollTimer);
+      this.initialPollTimer = null;
+    }
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+
     const poll = async () => {
       if (this.stopped) return;
       const expired = await this.isLockExpired();
@@ -325,6 +348,10 @@ export class DingTalkGatewayManager {
         if (this.pollTimer) {
           clearInterval(this.pollTimer);
           this.pollTimer = null;
+        }
+        if (this.initialPollTimer) {
+          clearTimeout(this.initialPollTimer);
+          this.initialPollTimer = null;
         }
         const acquired = await this.tryAcquireLock();
         if (acquired) {
@@ -384,7 +411,7 @@ export class DingTalkGatewayManager {
       // Process message asynchronously
       void (async () => {
         try {
-          const data = JSON.parse(res.data) as DingTalkMessageData;
+          const data = parseDingTalkMessage(res.data);
           await handleDingTalkMessage(botId, data.senderStaffId, data, logger);
         } catch (err) {
           logger.error(
@@ -400,22 +427,29 @@ export class DingTalkGatewayManager {
     this.connections.set(botId, {
       channel: ch,
       client: dwClient,
-      clientId,
-      clientSecret,
     });
 
     this.logger.info({ botId }, 'DingTalk stream client connected');
   }
 
   private async discoverDingTalkChannels(): Promise<ChannelConfig[]> {
-    const result = await ddb.send(
-      new ScanCommand({
-        TableName: config.tables.channels,
-        FilterExpression: 'channelType = :ct',
-        ExpressionAttributeValues: { ':ct': 'dingtalk' },
-      }),
-    );
-    return (result.Items || []) as ChannelConfig[];
+    const channels: ChannelConfig[] = [];
+    let lastKey: Record<string, unknown> | undefined;
+
+    do {
+      const result = await ddb.send(
+        new ScanCommand({
+          TableName: config.tables.channels,
+          FilterExpression: 'channelType = :ct',
+          ExpressionAttributeValues: { ':ct': 'dingtalk' },
+          ExclusiveStartKey: lastKey,
+        }),
+      );
+      channels.push(...(result.Items || []) as ChannelConfig[]);
+      lastKey = result.LastEvaluatedKey as Record<string, unknown> | undefined;
+    } while (lastKey);
+
+    return channels;
   }
 
   private async loadCredentials(
@@ -424,7 +458,14 @@ export class DingTalkGatewayManager {
     const res = await secretsMgr.send(
       new GetSecretValueCommand({ SecretId: secretArn }),
     );
-    return JSON.parse(res.SecretString || '{}');
+    if (!res.SecretString) {
+      throw new Error(`Secret ${secretArn} has no SecretString (binary secret or empty)`);
+    }
+    try {
+      return JSON.parse(res.SecretString);
+    } catch (err) {
+      throw new Error(`Secret ${secretArn} contains invalid JSON: ${(err as Error).message}`);
+    }
   }
 }
 

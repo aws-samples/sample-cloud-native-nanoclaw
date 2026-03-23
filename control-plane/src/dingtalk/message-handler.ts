@@ -33,26 +33,52 @@ export interface DingTalkMessageData {
   sessionWebhookExpiredTime: number;
   createAt: number;             // timestamp in milliseconds
   senderCorpId: string;
-  conversationType: string;     // '1' = private, '2' = group
+  conversationType: '1' | '2';  // '1' = private, '2' = group
   senderId: string;
   sessionWebhook: string;       // webhook URL for quick reply
   robotCode: string;            // robot app key
-  text: { content: string };    // message text content
-  msgtype: string;              // 'text', 'richText', 'picture', etc.
+  text?: { content: string };   // message text content (present for text messages)
+  msgtype: 'text' | 'richText' | 'picture' | 'audio' | 'video' | 'file';
   isInAtList?: boolean;         // whether bot was @mentioned
   atUsers?: Array<{ dingtalkId: string; staffId?: string }>;
+}
+
+// -- Runtime Validation -------------------------------------------------------
+
+/**
+ * Parse and validate a raw DingTalk message JSON string.
+ * Checks required fields before returning typed data.
+ */
+export function parseDingTalkMessage(raw: string): DingTalkMessageData {
+  const data = JSON.parse(raw);
+  if (!data.conversationId || !data.msgId || !data.senderStaffId) {
+    throw new Error(
+      `Invalid DingTalk message: missing required fields (conversationId=${data.conversationId}, msgId=${data.msgId}, senderStaffId=${data.senderStaffId})`,
+    );
+  }
+  return data as DingTalkMessageData;
 }
 
 // -- Helpers ------------------------------------------------------------------
 
 /**
  * Strip @bot mentions from DingTalk text content.
- * DingTalk @mentions appear as @NickName in the text body.
- * Remove them for cleaner prompts sent to the agent.
+ * Uses the atUsers array to only remove actual bot mentions,
+ * preserving legitimate @ references like email addresses.
  */
-function stripAtMentions(text: string): string {
-  // DingTalk inserts @mentions as @NickName (non-whitespace sequence)
-  return text.replace(/@\S+/g, '').trim();
+function stripBotMentions(text: string, atUsers?: DingTalkMessageData['atUsers']): string {
+  if (!atUsers || atUsers.length === 0) return text.trim();
+
+  let result = text;
+  for (const user of atUsers) {
+    // DingTalk @mentions appear as @NickName — the dingtalkId is the identifier
+    // We can't know the exact display name, so strip the first @word for each bot mention
+    if (user.dingtalkId) {
+      // Remove one @word occurrence per bot user
+      result = result.replace(/@\S+/, '');
+    }
+  }
+  return result.trim();
 }
 
 /**
@@ -67,6 +93,7 @@ function shouldTrigger(
   conversationType: string,
   triggerPattern: string,
   isInAtList?: boolean,
+  logger?: pino.Logger,
 ): boolean {
   // Private chats always trigger
   if (conversationType === '1') return true;
@@ -79,7 +106,11 @@ function shouldTrigger(
   try {
     const regex = new RegExp(triggerPattern, 'i');
     return regex.test(content);
-  } catch {
+  } catch (err) {
+    logger?.warn(
+      { triggerPattern, err: (err as Error).message },
+      'Invalid trigger regex, falling back to substring match',
+    );
     return content.toLowerCase().includes(triggerPattern.toLowerCase());
   }
 }
@@ -111,7 +142,10 @@ export async function handleDingTalkMessage(
   }
 
   const rawContent = data.text?.content || '';
-  if (!rawContent.trim()) return;
+  if (!rawContent.trim()) {
+    logger.debug({ botId }, 'Skipping empty DingTalk message');
+    return;
+  }
 
   // Construct group identifier: dt:{conversationId}
   const groupJid = `dt:${data.conversationId}`;
@@ -123,7 +157,14 @@ export async function handleDingTalkMessage(
 
   // Load bot config
   const bot = await getCachedBot(botId);
-  if (!bot || bot.status !== 'active') return;
+  if (!bot) {
+    logger.warn({ botId }, 'DingTalk message received for unknown bot, discarding');
+    return;
+  }
+  if (bot.status !== 'active') {
+    logger.debug({ botId, status: bot.status }, 'DingTalk message received for inactive bot, discarding');
+    return;
+  }
 
   // Check group quota before auto-creating (same pattern as feishu)
   const existingGroups = await listGroups(botId);
@@ -144,7 +185,7 @@ export async function handleDingTalkMessage(
   await getOrCreateGroup(botId, groupJid, chatName, 'dingtalk', isGroup);
 
   // Clean @mention text for cleaner prompts (only in group chats)
-  const content = isGroup ? stripAtMentions(rawContent) : rawContent.trim();
+  const content = isGroup ? stripBotMentions(rawContent, data.atUsers) : rawContent.trim();
 
   // Store message in DynamoDB
   const timestamp =
@@ -165,7 +206,16 @@ export async function handleDingTalkMessage(
     channelType: 'dingtalk',
     ttl: Math.floor(Date.now() / 1000) + 90 * 24 * 3600,
   };
-  await putMessage(msg);
+
+  try {
+    await putMessage(msg);
+  } catch (err) {
+    logger.error(
+      { err, botId, messageId, groupJid },
+      'Failed to store DingTalk message in DynamoDB',
+    );
+    throw err;
+  }
 
   // Check trigger (use raw content for pattern matching, before @mention stripping)
   if (
@@ -174,6 +224,7 @@ export async function handleDingTalkMessage(
       data.conversationType,
       bot.triggerPattern,
       data.isInAtList,
+      logger,
     )
   ) {
     logger.debug({ botId, groupJid }, 'DingTalk message did not match trigger');
@@ -205,17 +256,26 @@ export async function handleDingTalkMessage(
       dingtalkMsgId: data.msgId,
       dingtalkSessionWebhook: data.sessionWebhook,
       dingtalkIsGroup: data.conversationType === '2',
+      dingtalkSenderStaffId: data.senderStaffId,
     },
   };
 
-  await sqs.send(
-    new SendMessageCommand({
-      QueueUrl: config.queues.messages,
-      MessageBody: JSON.stringify(sqsPayload),
-      MessageGroupId: `${botId}#${groupJid}`,
-      MessageDeduplicationId: messageId,
-    }),
-  );
+  try {
+    await sqs.send(
+      new SendMessageCommand({
+        QueueUrl: config.queues.messages,
+        MessageBody: JSON.stringify(sqsPayload),
+        MessageGroupId: `${botId}#${groupJid}`,
+        MessageDeduplicationId: messageId,
+      }),
+    );
+  } catch (err) {
+    logger.error(
+      { err, botId, messageId, groupJid, queueUrl: config.queues.messages },
+      'Failed to dispatch DingTalk message to SQS — message stored but not queued for agent processing',
+    );
+    throw err;
+  }
 
   logger.info(
     { botId, groupJid, messageId: msg.messageId },
