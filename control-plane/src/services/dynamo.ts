@@ -385,15 +385,20 @@ export async function createBot(bot: Bot): Promise<void> {
       ConditionExpression: 'attribute_not_exists(userId) AND attribute_not_exists(botId)',
     }),
   );
-  // PERF-C1: Atomically increment denormalized botCount on the user record
-  await client.send(
-    new UpdateCommand({
-      TableName: config.tables.users,
-      Key: { userId: bot.userId },
-      UpdateExpression: 'ADD botCount :inc',
-      ExpressionAttributeValues: { ':inc': 1 },
-    }),
-  );
+  // PERF-C1: Best-effort increment of denormalized botCount (display-only field).
+  // Wrapped in try/catch so a failed counter update doesn't mask a successful bot creation.
+  try {
+    await client.send(
+      new UpdateCommand({
+        TableName: config.tables.users,
+        Key: { userId: bot.userId },
+        UpdateExpression: 'ADD botCount :inc',
+        ExpressionAttributeValues: { ':inc': 1 },
+      }),
+    );
+  } catch (err) {
+    console.warn(`Failed to increment botCount for user ${bot.userId}:`, err);
+  }
 }
 
 export async function getBot(
@@ -509,15 +514,19 @@ export async function deleteBot(
       },
     }),
   );
-  // PERF-C1: Atomically decrement denormalized botCount on the user record
-  await client.send(
-    new UpdateCommand({
-      TableName: config.tables.users,
-      Key: { userId },
-      UpdateExpression: 'ADD botCount :dec',
-      ExpressionAttributeValues: { ':dec': -1 },
-    }),
-  );
+  // PERF-C1: Best-effort decrement of denormalized botCount (display-only field).
+  try {
+    await client.send(
+      new UpdateCommand({
+        TableName: config.tables.users,
+        Key: { userId },
+        UpdateExpression: 'ADD botCount :dec',
+        ExpressionAttributeValues: { ':dec': -1 },
+      }),
+    );
+  } catch (err) {
+    console.warn(`Failed to decrement botCount for user ${userId}:`, err);
+  }
 }
 
 // ── Channel operations ──────────────────────────────────────────────────────

@@ -4,8 +4,6 @@
 // built-in WebSocket client which handles reconnection automatically.
 
 import * as lark from '@larksuiteoapi/node-sdk';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
@@ -20,9 +18,6 @@ import type { FeishuDomain } from '../channels/feishu.js';
 
 // ── Clients ──────────────────────────────────────────────────────────────────
 
-const ddb = DynamoDBDocumentClient.from(
-  new DynamoDBClient({ region: config.region }),
-);
 const secretsMgr = new SecretsManagerClient({ region: config.region });
 
 // ── Types ────────────────────────────────────────────────────────────────────
