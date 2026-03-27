@@ -362,4 +362,8 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     await deleteProviderDb(providerId);
     return reply.status(204).send();
   });
+
+  // Register skills sub-routes (inherits admin guard)
+  const { adminSkillsRoutes } = await import('./admin-skills.js');
+  await app.register(adminSkillsRoutes, { prefix: '/skills' });
 };

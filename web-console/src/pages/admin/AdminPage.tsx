@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Users, CreditCard, Save, Plus, Ban, PlayCircle, Trash2 } from 'lucide-react';
+import { Users, CreditCard, Save, Plus, Ban, PlayCircle, Trash2, Zap, Upload, GitBranch, X } from 'lucide-react';
 import { clsx } from 'clsx';
 import TabNav from '../../components/TabNav';
 import Badge from '../../components/Badge';
-import { admin, AdminUser, PlanQuotasConfig } from '../../lib/api';
+import { admin, AdminUser, PlanQuotasConfig, Skill } from '../../lib/api';
 
 /* ── Quota field keys ────────────────────────────────────────────── */
 
@@ -337,6 +337,276 @@ function PlansTab() {
   );
 }
 
+/* ── Skills tab ──────────────────────────────────────────────────── */
+
+function SkillsTab() {
+  const { t } = useTranslation();
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [addMode, setAddMode] = useState<'upload' | 'git'>('upload');
+  const [submitting, setSubmitting] = useState(false);
+
+  // Upload form
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploadName, setUploadName] = useState('');
+  const [uploadDesc, setUploadDesc] = useState('');
+  const [uploadVersion, setUploadVersion] = useState('1.0.0');
+
+  // Git form
+  const [gitUrl, setGitUrl] = useState('');
+  const [gitPath, setGitPath] = useState('');
+  const [gitName, setGitName] = useState('');
+  const [gitDesc, setGitDesc] = useState('');
+  const [gitVersion, setGitVersion] = useState('1.0.0');
+
+  function loadSkills() {
+    setLoading(true);
+    admin.listSkills()
+      .then((res) => setSkills(res.skills))
+      .catch((err) => console.error('Failed to load skills:', err))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => { loadSkills(); }, []);
+
+  function formatDate(dateStr?: string): string {
+    if (!dateStr) return '\u2014';
+    const d = new Date(dateStr);
+    return isNaN(d.getTime()) ? '\u2014' : d.toLocaleDateString();
+  }
+
+  function resetForms() {
+    setShowAdd(false);
+    setUploadName(''); setUploadDesc(''); setUploadVersion('1.0.0');
+    setGitUrl(''); setGitPath(''); setGitName(''); setGitDesc(''); setGitVersion('1.0.0');
+    if (fileRef.current) fileRef.current.value = '';
+  }
+
+  async function handleUpload() {
+    const file = fileRef.current?.files?.[0];
+    if (!file || !uploadName.trim()) return;
+    setSubmitting(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('name', uploadName.trim());
+      formData.append('description', uploadDesc.trim());
+      formData.append('version', uploadVersion.trim() || '1.0.0');
+      await admin.uploadSkill(formData);
+      resetForms();
+      loadSkills();
+    } catch (err) {
+      console.error('Failed to upload skill:', err);
+      alert(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleGitInstall() {
+    if (!gitUrl.trim() || !gitName.trim()) return;
+    setSubmitting(true);
+    try {
+      await admin.installSkillFromGit({
+        url: gitUrl.trim(),
+        path: gitPath.trim() || undefined,
+        name: gitName.trim(),
+        description: gitDesc.trim(),
+        version: gitVersion.trim() || '1.0.0',
+      });
+      resetForms();
+      loadSkills();
+    } catch (err) {
+      console.error('Failed to install skill from git:', err);
+      alert(err instanceof Error ? err.message : 'Git install failed');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleToggleStatus(skill: Skill) {
+    const newStatus = skill.status === 'active' ? 'disabled' : 'active';
+    try {
+      await admin.updateSkill(skill.skillId, { status: newStatus });
+      loadSkills();
+    } catch (err) {
+      console.error('Failed to update skill status:', err);
+    }
+  }
+
+  async function handleDelete(skill: Skill) {
+    if (!window.confirm(t('admin.skills.deleteConfirm', { name: skill.name }))) return;
+    try {
+      await admin.deleteSkill(skill.skillId);
+      loadSkills();
+    } catch (err) {
+      console.error('Failed to delete skill:', err);
+    }
+  }
+
+  if (loading) return <div className="text-center py-12 text-slate-400">{t('common.loading')}</div>;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-end">
+        <button
+          onClick={() => setShowAdd(true)}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-accent-500 text-white px-4 py-2 text-sm font-medium hover:bg-accent-600 transition-colors"
+        >
+          <Plus size={16} /> {t('admin.skills.addSkill')}
+        </button>
+      </div>
+
+      {showAdd && (
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex gap-2">
+              <button
+                onClick={() => setAddMode('upload')}
+                className={clsx(
+                  'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
+                  addMode === 'upload' ? 'bg-accent-500 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200',
+                )}
+              >
+                <Upload size={14} /> {t('admin.skills.uploadZip')}
+              </button>
+              <button
+                onClick={() => setAddMode('git')}
+                className={clsx(
+                  'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
+                  addMode === 'git' ? 'bg-accent-500 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200',
+                )}
+              >
+                <GitBranch size={14} /> {t('admin.skills.gitRepo')}
+              </button>
+            </div>
+            <button onClick={resetForms} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+          </div>
+
+          {addMode === 'upload' ? (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{t('admin.skills.name')}</label>
+                <input type="text" value={uploadName} onChange={(e) => setUploadName(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{t('admin.skills.description')}</label>
+                <textarea value={uploadDesc} onChange={(e) => setUploadDesc(e.target.value)} rows={2}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{t('admin.skills.version')}</label>
+                <input type="text" value={uploadVersion} onChange={(e) => setUploadVersion(e.target.value)}
+                  className="w-48 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{t('admin.skills.zipFile')}</label>
+                <input ref={fileRef} type="file" accept=".zip"
+                  className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-accent-50 file:text-accent-700 hover:file:bg-accent-100" />
+              </div>
+              <button onClick={handleUpload} disabled={submitting || !uploadName.trim()}
+                className="rounded-lg bg-accent-500 text-white px-4 py-2 text-sm font-medium hover:bg-accent-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                {submitting ? t('common.uploading') : t('admin.skills.upload')}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{t('admin.skills.name')}</label>
+                <input type="text" value={gitName} onChange={(e) => setGitName(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{t('admin.skills.gitUrl')}</label>
+                <input type="url" value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} placeholder="https://github.com/..."
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{t('admin.skills.subPath')}</label>
+                <input type="text" value={gitPath} onChange={(e) => setGitPath(e.target.value)} placeholder={t('admin.skills.subPathPlaceholder')}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{t('admin.skills.description')}</label>
+                <textarea value={gitDesc} onChange={(e) => setGitDesc(e.target.value)} rows={2}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{t('admin.skills.version')}</label>
+                <input type="text" value={gitVersion} onChange={(e) => setGitVersion(e.target.value)}
+                  className="w-48 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-accent-500 focus:ring-2 focus:ring-accent-500/20 focus:outline-none" />
+              </div>
+              <button onClick={handleGitInstall} disabled={submitting || !gitUrl.trim() || !gitName.trim()}
+                className="rounded-lg bg-accent-500 text-white px-4 py-2 text-sm font-medium hover:bg-accent-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                {submitting ? t('common.installing') : t('admin.skills.install')}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+        <table className="min-w-full divide-y divide-slate-200">
+          <thead className="bg-slate-50">
+            <tr>
+              <th className="px-6 py-3 text-left text-xs uppercase tracking-wider text-slate-400 font-medium">{t('admin.skills.name')}</th>
+              <th className="px-6 py-3 text-left text-xs uppercase tracking-wider text-slate-400 font-medium">{t('admin.skills.version')}</th>
+              <th className="px-6 py-3 text-left text-xs uppercase tracking-wider text-slate-400 font-medium">{t('admin.skills.files')}</th>
+              <th className="px-6 py-3 text-left text-xs uppercase tracking-wider text-slate-400 font-medium">{t('admin.skills.source')}</th>
+              <th className="px-6 py-3 text-left text-xs uppercase tracking-wider text-slate-400 font-medium">{t('admin.skills.status')}</th>
+              <th className="px-6 py-3 text-left text-xs uppercase tracking-wider text-slate-400 font-medium">{t('admin.skills.created')}</th>
+              <th className="px-6 py-3 text-left text-xs uppercase tracking-wider text-slate-400 font-medium">{t('admin.users.actions')}</th>
+            </tr>
+          </thead>
+          <tbody className="bg-white divide-y divide-slate-200">
+            {skills.map((skill) => (
+              <tr key={skill.skillId} className="hover:bg-slate-50 transition-colors">
+                <td className="px-6 py-4">
+                  <div className="text-sm font-medium text-slate-900">{skill.name}</div>
+                  {skill.description && (
+                    <div className="text-xs text-slate-500 mt-0.5 line-clamp-1">{skill.description}</div>
+                  )}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-700">{skill.version}</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-700">{skill.fileCount}</td>
+                <td className="px-6 py-4 whitespace-nowrap">
+                  <Badge variant={skill.source === 'git' ? 'info' : 'neutral'}>
+                    {skill.source === 'git' ? 'Git' : 'Zip'}
+                  </Badge>
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap">
+                  <button onClick={() => handleToggleStatus(skill)}
+                    className="cursor-pointer">
+                    <Badge variant={skill.status === 'active' ? 'success' : 'warning'}>
+                      {skill.status}
+                    </Badge>
+                  </button>
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{formatDate(skill.createdAt)}</td>
+                <td className="px-6 py-4 whitespace-nowrap">
+                  <button
+                    onClick={() => handleDelete(skill)}
+                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"
+                  >
+                    <Trash2 size={14} /> {t('common.delete')}
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {skills.length === 0 && (
+              <tr>
+                <td colSpan={7} className="px-6 py-8 text-center text-slate-500">{t('admin.skills.noSkills')}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /* ── Main AdminPage ──────────────────────────────────────────────── */
 
 export default function AdminPage() {
@@ -346,6 +616,7 @@ export default function AdminPage() {
   const tabs = [
     { key: 'users', label: t('admin.tabs.users'), icon: <Users size={16} /> },
     { key: 'plans', label: t('admin.tabs.plans'), icon: <CreditCard size={16} /> },
+    { key: 'skills', label: t('admin.tabs.skills'), icon: <Zap size={16} /> },
   ];
 
   return (
@@ -357,6 +628,7 @@ export default function AdminPage() {
       <div className="mt-5">
         {activeTab === 'users' && <UsersTab />}
         {activeTab === 'plans' && <PlansTab />}
+        {activeTab === 'skills' && <SkillsTab />}
       </div>
     </div>
   );

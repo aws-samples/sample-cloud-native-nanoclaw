@@ -33,9 +33,11 @@ import {
   releaseAgentSlot,
   getChannelsByBot,
   getProvider,
+  getSkill,
 } from '../services/dynamo.js';
 import { getProviderApiKey, getProxyRules } from '../services/secrets.js';
 import { getCachedBot } from '../services/cached-lookups.js';
+import type { Bot } from '@clawbot/shared';
 import { getRegistry } from '../adapters/registry.js';
 import type { ReplyContext, ReplyOptions } from '@clawbot/shared/channel-adapter';
 import type { Logger } from 'pino';
@@ -368,6 +370,9 @@ async function dispatchMessage(
       ...(bot.toolWhitelist && { toolWhitelist: bot.toolWhitelist }),
     };
 
+    const skillPrefixes = await resolveSkillPrefixes(bot);
+    if (skillPrefixes.length > 0) invocationPayload.skills = skillPrefixes;
+
     logger.info(
       { botId: payload.botId, groupJid: payload.groupJid, proxyRuleCount: proxyRules.length },
       'Invoking agent',
@@ -540,6 +545,9 @@ async function dispatchTask(
     ...(bot.toolWhitelist && { toolWhitelist: bot.toolWhitelist }),
   };
 
+  const taskSkillPrefixes = await resolveSkillPrefixes(bot);
+  if (taskSkillPrefixes.length > 0) invocationPayload.skills = taskSkillPrefixes;
+
   const result = await invokeAgent(invocationPayload, logger);
 
   if (result.status === 'success' && result.result) {
@@ -587,6 +595,18 @@ async function dispatchTask(
       lastModelProvider: effectiveProvider,
     });
   }
+}
+
+// ── Skill Resolution ─────────────────────────────────────────────────────────
+
+/** Resolve bot skill IDs to flat S3 prefix names for runtime download. */
+async function resolveSkillPrefixes(bot: Bot): Promise<string[]> {
+  if (!bot.skills?.length) return [];
+  const resolved = await Promise.all(bot.skills.map((id) => getSkill(id)));
+  // Flatten: each skill record can have multiple s3Prefixes (e.g., plugin with 2 skills)
+  return resolved
+    .filter((s) => s?.status === 'active')
+    .flatMap((s) => s!.s3Prefixes);
 }
 
 // ── Agent Invocation (AgentCore Runtime via AWS SDK) ─────────────────────────

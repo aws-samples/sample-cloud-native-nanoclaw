@@ -82,6 +82,27 @@ export async function syncToS3(
 }
 
 /**
+ * Download enabled skills from S3 to ~/.claude/skills/.
+ * Overlays onto existing directory — does NOT delete bundled or previously downloaded skills.
+ * Payload contains S3 prefix names (e.g., "email-manager"), not skill IDs.
+ */
+export async function downloadSkills(
+  s3: S3Client,
+  bucket: string,
+  skillPrefixes: string[],
+  logger: pino.Logger,
+): Promise<void> {
+  const SKILLS_DIR = join(CLAUDE_DIR, 'skills');
+  await mkdir(SKILLS_DIR, { recursive: true });
+
+  for (const prefix of skillPrefixes) {
+    const s3Prefix = `skills/${prefix}/`;
+    logger.info({ prefix, s3Prefix }, 'Downloading skill from S3');
+    await downloadDirectory(s3, bucket, s3Prefix, join(SKILLS_DIR, prefix), logger);
+  }
+}
+
+/**
  * Delete all objects under the session S3 prefix.
  * Used when model/provider changes make existing session JSONL incompatible.
  */

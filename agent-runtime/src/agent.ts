@@ -18,7 +18,7 @@
  *   - Session resumption via sessionId
  */
 
-import fs, { rmSync, mkdirSync } from 'fs';
+import fs, { rmSync, mkdirSync, readdirSync } from 'fs';
 import { writeFile, mkdir } from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -31,7 +31,7 @@ import {
 } from '@aws-sdk/client-secrets-manager';
 import type pino from 'pino';
 import type { InvocationPayload, InvocationResult, Attachment } from '@clawbot/shared';
-import { syncFromS3, syncToS3, clearSessionDirectory, syncMemoryOnlyFromS3, type SyncPaths } from './session.js';
+import { syncFromS3, syncToS3, clearSessionDirectory, syncMemoryOnlyFromS3, downloadSkills, type SyncPaths } from './session.js';
 import { buildAppendContent } from './system-prompt.js';
 import { getScopedClients } from './scoped-credentials.js';
 import { setBusy, setIdle } from './server.js';
@@ -46,10 +46,23 @@ const secretsManager = new SecretsManagerClient({});
 let currentSessionKey: string | undefined;
 
 async function cleanLocalWorkspace(): Promise<void> {
-  for (const dir of ['/workspace/group', '/workspace/learnings', '/workspace/reference', '/home/node/.claude']) {
+  // Clean /home/node/.claude EXCEPT skills/ — bundled skills are baked into the Docker
+  // image and cannot be recovered after deletion. Clean individual subdirs instead.
+  for (const dir of ['/workspace/group', '/workspace/learnings', '/workspace/reference']) {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
     try { mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
   }
+  // Selectively clean ~/.claude contents, preserving skills/
+  const claudeDir = '/home/node/.claude';
+  try {
+    const entries = readdirSync(claudeDir);
+    for (const entry of entries) {
+      if (entry === 'skills') continue; // Preserve bundled + S3-managed skills
+      const fullPath = path.join(claudeDir, entry);
+      try { rmSync(fullPath, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  } catch { /* dir may not exist yet */ }
+  try { mkdirSync(claudeDir, { recursive: true }); } catch { /* ignore */ }
 }
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -169,6 +182,12 @@ async function _handleInvocation(
   // 2b. Download inbound attachments to /workspace/group/attachments/
   if (payload.attachments?.length) {
     await downloadAttachments(s3, SESSION_BUCKET, payload.attachments, logger);
+  }
+
+  // 2c. Download enabled skills to ~/.claude/skills/
+  if (payload.skills?.length) {
+    logger.info({ skillCount: payload.skills.length }, 'Downloading enabled skills');
+    await downloadSkills(s3, SESSION_BUCKET, payload.skills, logger);
   }
 
   // 3. Copy bot operating manual to ~/.claude/CLAUDE.md if not present (first run)

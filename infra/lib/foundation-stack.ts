@@ -25,6 +25,7 @@ export class FoundationStack extends cdk.Stack {
   public readonly tasksTable: dynamodb.Table;
   public readonly sessionsTable: dynamodb.Table;
   public readonly providersTable: dynamodb.Table;
+  public readonly skillsTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: FoundationStackProps) {
     super(scope, id, props);
@@ -187,6 +188,13 @@ export class FoundationStack extends cdk.Stack {
       tableName: `nanoclawbot-${stage}-providers`,
       partitionKey: { name: 'providerId', type: dynamodb.AttributeType.STRING },
       pointInTimeRecovery: true,
+    });
+
+    // 9. Skills table (global platform-level skills, admin-managed)
+    this.skillsTable = new dynamodb.Table(this, 'SkillsTable', {
+      ...tableDefaults,
+      tableName: `nanoclawbot-${stage}-skills`,
+      partitionKey: { name: 'skillId', type: dynamodb.AttributeType.STRING },
     });
 
     // ── Stack Outputs (used by deploy.sh) ──────────────────────────────

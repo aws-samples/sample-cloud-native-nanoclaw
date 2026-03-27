@@ -22,7 +22,9 @@
     "noFilesFound": "没有找到文件",
     "botNotFound": "未找到机器人",
     "userNotFound": "未找到用户",
-    "copy": "复制"
+    "copy": "复制",
+    "uploading": "上传中...",
+    "installing": "安装中..."
   },
   "sidebar": {
     "dashboard": "仪表盘",
@@ -78,6 +80,7 @@
       "memory": "记忆",
       "files": "文件",
       "tools": "工具",
+      "skills": "技能",
       "settings": "设置"
     },
     "overview": {
@@ -168,6 +171,19 @@
       "saving": "保存中...",
       "saved": "工具白名单已保存",
       "error": "保存工具白名单失败"
+    },
+    "skills": {
+      "title": "技能库",
+      "subtitle": "从平台技能库中为此机器人启用技能",
+      "platformSkills": "平台技能",
+      "bundledSkills": "内置技能白名单",
+      "whitelistEnabled": "白名单已启用 — 仅允许勾选的技能",
+      "whitelistDisabled": "白名单未启用 — 允许所有内置技能",
+      "noSkills": "暂无平台技能。请联系管理员添加技能。",
+      "save": "保存",
+      "saving": "保存中...",
+      "saved": "技能已更新",
+      "error": "更新技能失败"
     },
     "settings": {
       "triggerPattern": "触发模式",
@@ -471,7 +487,8 @@
     "title": "管理",
     "tabs": {
       "users": "用户",
-      "plans": "套餐"
+      "plans": "套餐",
+      "skills": "技能"
     },
     "users": {
       "addUser": "添加用户",
@@ -503,6 +520,26 @@
       "plansSaved": "套餐保存成功。",
       "plansSaveFailed": "保存套餐失败，请重试。",
       "failedToLoad": "加载套餐配额失败。"
+    },
+    "skills": {
+      "addSkill": "添加技能",
+      "name": "名称",
+      "description": "描述",
+      "version": "版本",
+      "files": "文件",
+      "source": "来源",
+      "status": "状态",
+      "created": "创建时间",
+      "noSkills": "暂无技能。点击上方按钮添加第一个技能。",
+      "uploadZip": "上传 Zip",
+      "gitRepo": "Git 仓库",
+      "zipFile": "Zip 文件",
+      "upload": "上传",
+      "install": "安装",
+      "gitUrl": "仓库地址",
+      "subPath": "子目录（可选）",
+      "subPathPlaceholder": "例如 skills/my-skill",
+      "deleteConfirm": "删除技能 \"{{name}}\"？此操作无法撤销。"
     },
     "userDetail": {
       "userInfo": "用户信息",

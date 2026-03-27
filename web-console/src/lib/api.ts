@@ -29,6 +29,21 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return response.json();
 }
 
+/** Upload helper for multipart form data (no JSON Content-Type). */
+async function uploadRequest<T>(path: string, formData: FormData): Promise<T> {
+  const token = await getAuthToken();
+  const response = await fetch(`${BASE_URL}${path}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(error.error || response.statusText);
+  }
+  return response.json();
+}
+
 // Types (simplified from shared, for frontend use)
 export interface Bot {
   botId: string;
@@ -165,6 +180,9 @@ export const bots = {
   update: (botId: string, data: Partial<Bot>) => request<Bot>(`/bots/${botId}`, { method: 'PUT', body: JSON.stringify(data) }),
   delete: (botId: string) => request<void>(`/bots/${botId}`, { method: 'DELETE' }),
   availableTools: () => request<AvailableTools>('/bots/available-tools'),
+  listSkills: (botId: string) => request<{ skills: BotSkillEntry[] }>(`/bots/${botId}/skills`),
+  updateSkills: (botId: string, skills: string[]) =>
+    request<{ ok: boolean }>(`/bots/${botId}/skills`, { method: 'PUT', body: JSON.stringify({ skills }) }),
 };
 
 // Channel API
@@ -265,7 +283,36 @@ export const admin = {
     request<ProviderFull>(`/admin/providers/${providerId}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteProvider: (providerId: string) =>
     request<void>(`/admin/providers/${providerId}`, { method: 'DELETE' }),
+  // Skills management
+  listSkills: () => request<{ skills: Skill[] }>('/admin/skills'),
+  getSkill: (skillId: string) => request<Skill>(`/admin/skills/${skillId}`),
+  uploadSkill: (formData: FormData) => uploadRequest<Skill>('/admin/skills/upload', formData),
+  installSkillFromGit: (data: { url: string; path?: string; name: string; description: string; version?: string }) =>
+    request<Skill>('/admin/skills/git', { method: 'POST', body: JSON.stringify(data) }),
+  updateSkill: (skillId: string, data: { name?: string; description?: string; status?: string; version?: string }) =>
+    request<Skill>(`/admin/skills/${skillId}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteSkill: (skillId: string) => request<void>(`/admin/skills/${skillId}`, { method: 'DELETE' }),
 };
+
+// Skill types (admin-managed global skills library)
+export interface Skill {
+  skillId: string;
+  name: string;
+  description: string;
+  version: string;
+  source: 'zip' | 'git';
+  sourceUrl?: string;
+  fileCount: number;
+  files: string[];
+  status: 'active' | 'disabled';
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+}
+
+export interface BotSkillEntry extends Skill {
+  enabled: boolean;
+}
 
 // File Browser types
 export interface FileEntry {

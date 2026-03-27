@@ -7,9 +7,11 @@ import { ulid } from 'ulid';
 import {
   createBot,
   getBot,
+  getSkill,
   getProvider,
   getUser,
   listBots,
+  listSkills,
   updateBot,
   deleteBot,
 } from '../../services/dynamo.js';
@@ -190,6 +192,54 @@ export const botsRoutes: FastifyPluginAsync = async (app) => {
 
       await deleteBot(request.userId, botId);
       return reply.status(204).send();
+    },
+  );
+
+  // GET /:botId/skills — List available skills with enabled state for this bot
+  app.get<{ Params: { botId: string } }>(
+    '/:botId/skills',
+    async (request, reply) => {
+      const bot = await getBot(request.userId, request.params.botId);
+      if (!bot || bot.status === 'deleted') {
+        return reply.status(404).send({ error: 'Bot not found' });
+      }
+
+      const allSkills = await listSkills('active');
+      const enabledSet = new Set(bot.skills || []);
+
+      return {
+        skills: allSkills.map((skill) => ({
+          ...skill,
+          enabled: enabledSet.has(skill.skillId),
+        })),
+      };
+    },
+  );
+
+  // PUT /:botId/skills — Update enabled skills for this bot
+  app.put<{ Params: { botId: string } }>(
+    '/:botId/skills',
+    async (request, reply) => {
+      const { skills } = z.object({
+        skills: z.array(z.string().min(1)).max(50),
+      }).parse(request.body);
+
+      const bot = await getBot(request.userId, request.params.botId);
+      if (!bot || bot.status === 'deleted') {
+        return reply.status(404).send({ error: 'Bot not found' });
+      }
+
+      // Validate all skillIds exist and are active (concurrent lookups)
+      const resolved = await Promise.all(skills.map((id) => getSkill(id)));
+      for (let i = 0; i < resolved.length; i++) {
+        if (!resolved[i] || resolved[i]!.status !== 'active') {
+          return reply.status(400).send({ error: `Skill ${skills[i]} not found or not active` });
+        }
+      }
+
+      await updateBot(request.userId, request.params.botId, { skills });
+      botCache.delete(request.params.botId);
+      return { ok: true, skills };
     },
   );
 };

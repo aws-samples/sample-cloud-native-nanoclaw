@@ -22,6 +22,7 @@ import type {
   Provider,
   ScheduledTask,
   Session,
+  Skill,
   User,
   UserQuota,
   UserStatus,
@@ -464,6 +465,7 @@ export async function updateBot(
     'status',
     'containerConfig',
     'toolWhitelist',
+    'skills',
   ] as const;
 
   for (const field of allowedFields) {
@@ -1106,4 +1108,126 @@ export async function clearDefaultProvider(): Promise<void> {
       updatedAt: new Date().toISOString(),
     });
   }
+}
+
+// ── Skills (global, admin-managed) ────────────────────────────────────
+
+const skillIdSchema = z.string().min(1);
+
+export async function createSkill(skill: Skill): Promise<void> {
+  await client.send(
+    new PutCommand({
+      TableName: config.tables.skills,
+      Item: skill,
+      ConditionExpression: 'attribute_not_exists(skillId)',
+    }),
+  );
+}
+
+/** Check if any existing skill uses the given S3 prefix in its s3Prefixes array. */
+export async function getSkillByPrefix(prefix: string): Promise<Skill | null> {
+  let lastKey: Record<string, unknown> | undefined;
+  do {
+    const result = await client.send(
+      new ScanCommand({
+        TableName: config.tables.skills,
+        FilterExpression: 'contains(s3Prefixes, :prefix)',
+        ExpressionAttributeValues: { ':prefix': prefix },
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+    if (result.Items?.length) return result.Items[0] as Skill;
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+  return null;
+}
+
+/** Backward compat: old records have s3Prefix (string), new have s3Prefixes (string[]). */
+function migrateSkillRecord(skill: Skill & { s3Prefix?: string }): Skill {
+  if (!skill.s3Prefixes && skill.s3Prefix) {
+    skill.s3Prefixes = [skill.s3Prefix];
+  }
+  return skill;
+}
+
+export async function getSkill(skillId: string): Promise<Skill | null> {
+  skillIdSchema.parse(skillId);
+  const result = await client.send(
+    new GetCommand({
+      TableName: config.tables.skills,
+      Key: { skillId },
+    }),
+  );
+  if (!result.Item) return null;
+  return migrateSkillRecord(result.Item as Skill & { s3Prefix?: string });
+}
+
+export async function listSkills(status?: string): Promise<Skill[]> {
+  const items: Skill[] = [];
+  let lastKey: Record<string, unknown> | undefined;
+
+  do {
+    const result = await client.send(
+      new ScanCommand({
+        TableName: config.tables.skills,
+        ExclusiveStartKey: lastKey,
+        ...(status && {
+          FilterExpression: '#status = :status',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: { ':status': status },
+        }),
+      }),
+    );
+    if (result.Items) items.push(...(result.Items as Skill[]));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+
+  return items;
+}
+
+export async function updateSkill(
+  skillId: string,
+  updates: Partial<Pick<Skill, 'name' | 'description' | 'status' | 'version'>>,
+): Promise<void> {
+  skillIdSchema.parse(skillId);
+
+  const expressions: string[] = [];
+  const names: Record<string, string> = {};
+  const values: Record<string, unknown> = {};
+
+  const allowedFields = ['name', 'description', 'status', 'version'] as const;
+
+  for (const field of allowedFields) {
+    if (updates[field] !== undefined) {
+      expressions.push(`#${field} = :${field}`);
+      names[`#${field}`] = field;
+      values[`:${field}`] = updates[field];
+    }
+  }
+
+  if (expressions.length === 0) return;
+
+  expressions.push('#updatedAt = :updatedAt');
+  names['#updatedAt'] = 'updatedAt';
+  values[':updatedAt'] = new Date().toISOString();
+
+  await client.send(
+    new UpdateCommand({
+      TableName: config.tables.skills,
+      Key: { skillId },
+      UpdateExpression: `SET ${expressions.join(', ')}`,
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
+    }),
+  );
+}
+
+export async function deleteSkill(skillId: string): Promise<void> {
+  skillIdSchema.parse(skillId);
+  await client.send(
+    new DeleteCommand({
+      TableName: config.tables.skills,
+      Key: { skillId },
+    }),
+  );
 }

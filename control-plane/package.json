@@ -24,7 +24,9 @@
     "@aws-sdk/lib-dynamodb": "^3.700.0",
     "@clawbot/shared": "*",
     "@fastify/cors": "^10.0.0",
+    "@fastify/multipart": "^9.4.0",
     "@larksuiteoapi/node-sdk": "^1.59.0",
+    "adm-zip": "^0.5.16",
     "aws-jwt-verify": "^4.0.0",
     "cron-parser": "^5.5.0",
     "dingtalk-stream": "^2.1.5",
@@ -35,6 +37,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
     "@types/node": "^22.10.0",
     "pino-pretty": "^13.0.0",
     "tsx": "^4.19.0",

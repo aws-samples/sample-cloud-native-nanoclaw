@@ -99,6 +99,7 @@ export interface Bot {
   status: 'created' | 'active' | 'paused' | 'deleted';
   containerConfig?: BotContainerConfig;
   toolWhitelist?: ToolWhitelistConfig;
+  skills?: string[]; // Enabled skill IDs from global skills library
   createdAt: string;
   updatedAt: string;
 }
@@ -278,6 +279,8 @@ export interface InvocationPayload {
   proxyRules?: InvocationProxyRule[];
   /** Per-bot tool/skill whitelist config */
   toolWhitelist?: ToolWhitelistConfig;
+  /** Enabled skill IDs — agent runtime downloads these to ~/.claude/skills/ */
+  skills?: string[];
 }
 
 /** Proxy rule passed through invocation payload (secrets included). */
@@ -381,6 +384,26 @@ export interface UpdateBotRequest {
   modelId?: string;
   status?: 'active' | 'paused' | 'deleted';
   toolWhitelist?: ToolWhitelistConfig;
+  skills?: string[];
+}
+
+// --- Skill (DynamoDB: skills table, PK=skillId) ---
+// Global platform-level Claude Code skills managed by admin
+
+export interface Skill {
+  skillId: string;
+  name: string;
+  description: string;
+  version: string;
+  source: 'zip' | 'git';
+  sourceUrl?: string;
+  s3Prefixes: string[];   // Skill directory names in S3 (e.g., ["ms-swift", "llamafactory"])
+  fileCount: number;
+  files: string[];       // Relative paths of files in the skill package
+  status: 'active' | 'disabled';
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;     // Admin userId who created this skill
 }
 
 export interface UpdateTaskRequest {

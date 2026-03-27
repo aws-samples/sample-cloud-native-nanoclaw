@@ -180,6 +180,16 @@ export class AgentStack extends cdk.Stack {
       }),
     );
 
+    // Read-only access to global skills library (not ABAC-scoped — skills are platform-level)
+    this.agentScopedRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'S3ReadSkills',
+        effect: iam.Effect.ALLOW,
+        actions: ['s3:GetObject'],
+        resources: [`${dataBucket.bucketArn}/skills/*`],
+      }),
+    );
+
     // ── Scoped Role: DynamoDB ABAC ─────────────────────────────────────
     const allTableArns = Object.values(tables).map((t) => t.tableArn);
     this.agentScopedRole.addToPolicy(

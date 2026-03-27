@@ -4,6 +4,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
 import pino from 'pino';
 import { config, resolveConfig } from './config.js';
 import { healthRoutes } from './routes/health.js';
@@ -27,6 +28,7 @@ async function main() {
   const app = Fastify({ loggerInstance: logger });
 
   await app.register(cors, { origin: config.corsOrigin });
+  await app.register(multipart, { limits: { fileSize: 10 * 1024 * 1024 } }); // 10MB max for skill zips
 
   // SEC-C05: Reject requests not coming through CloudFront (X-Origin-Verify header check).
   // The /health endpoint is exempt because ALB health checks go directly to the container.

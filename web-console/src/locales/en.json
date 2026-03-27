@@ -22,7 +22,9 @@
     "noFilesFound": "No files found",
     "botNotFound": "Bot not found",
     "userNotFound": "User not found",
-    "copy": "Copy"
+    "copy": "Copy",
+    "uploading": "Uploading...",
+    "installing": "Installing..."
   },
   "sidebar": {
     "dashboard": "Dashboard",
@@ -78,6 +80,7 @@
       "memory": "Memory",
       "files": "Files",
       "tools": "Tools",
+      "skills": "Skills",
       "settings": "Settings"
     },
     "overview": {
@@ -168,6 +171,19 @@
       "saving": "Saving...",
       "saved": "Tool whitelist saved",
       "error": "Failed to save tool whitelist"
+    },
+    "skills": {
+      "title": "Skills Library",
+      "subtitle": "Enable skills from the platform library for this bot",
+      "platformSkills": "Platform Skills",
+      "bundledSkills": "Bundled Skill Whitelist",
+      "whitelistEnabled": "Whitelist enabled — only checked skills allowed",
+      "whitelistDisabled": "Whitelist disabled — all bundled skills allowed",
+      "noSkills": "No platform skills available. Ask your admin to add skills.",
+      "save": "Save",
+      "saving": "Saving...",
+      "saved": "Skills updated",
+      "error": "Failed to update skills"
     },
     "settings": {
       "triggerPattern": "Trigger Pattern",
@@ -471,7 +487,8 @@
     "title": "Admin",
     "tabs": {
       "users": "Users",
-      "plans": "Plans"
+      "plans": "Plans",
+      "skills": "Skills"
     },
     "users": {
       "addUser": "Add User",
@@ -503,6 +520,26 @@
       "plansSaved": "Plans saved successfully.",
       "plansSaveFailed": "Failed to save plans. Please try again.",
       "failedToLoad": "Failed to load plan quotas."
+    },
+    "skills": {
+      "addSkill": "Add Skill",
+      "name": "Name",
+      "description": "Description",
+      "version": "Version",
+      "files": "Files",
+      "source": "Source",
+      "status": "Status",
+      "created": "Created",
+      "noSkills": "No skills yet. Add your first skill using the button above.",
+      "uploadZip": "Upload Zip",
+      "gitRepo": "Git Repo",
+      "zipFile": "Zip File",
+      "upload": "Upload",
+      "install": "Install",
+      "gitUrl": "Repository URL",
+      "subPath": "Subdirectory (optional)",
+      "subPathPlaceholder": "e.g. skills/my-skill",
+      "deleteConfirm": "Delete skill \"{{name}}\"? This cannot be undone."
     },
     "userDetail": {
       "userInfo": "User Info",
