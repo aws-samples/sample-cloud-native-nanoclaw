@@ -20,7 +20,6 @@ import { SlackAdapter } from './adapters/slack/index.js';
 import { TelegramAdapter } from './adapters/telegram/index.js';
 import { FeishuAdapter } from './adapters/feishu/index.js';
 import { DingTalkAdapter } from './adapters/dingtalk/index.js';
-import { WebAdapter } from './adapters/web/index.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 
@@ -65,27 +64,8 @@ async function main() {
   registry.register(new TelegramAdapter(logger));
   registry.register(new FeishuAdapter(logger));
   registry.register(new DingTalkAdapter(logger));
-  const webAdapter = new WebAdapter(logger);
-  registry.register(webAdapter);
   registry.startAll().catch((err) => {
     logger.error(err, 'Failed to start channel adapters');
-  });
-
-  // Register WebSocket route for web chat channel
-  app.get('/ws/chat', { websocket: true }, (socket, request) => {
-    const gateway = webAdapter.getGateway();
-    if (!gateway) {
-      socket.close(1013, 'Web gateway not ready');
-      return;
-    }
-    if (!gateway.isLeader()) {
-      socket.close(1013, 'Not the leader instance, please reconnect');
-      return;
-    }
-    gateway.handleConnection(socket, request).catch((err) => {
-      logger.error({ err }, 'Error handling WebSocket connection');
-      try { socket.close(1011, 'Internal error'); } catch { /* ignore */ }
-    });
   });
 
   // Graceful shutdown — release leader locks, drain in-flight SQS messages

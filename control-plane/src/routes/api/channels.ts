@@ -23,7 +23,6 @@ import { verifyChannelCredentials } from '../../channels/index.js';
 import * as telegram from '../../channels/telegram.js';
 import { getFeishuGatewayManager } from '../../feishu/gateway-manager.js';
 import { getDingTalkGatewayManager } from '../../dingtalk/gateway-manager.js';
-import { getWebGatewayManager } from '../../web/gateway-manager.js';
 import type { ChannelConfig, CreateChannelRequest } from '@clawbot/shared';
 
 const secrets = new SecretsManagerClient({ region: config.region });
@@ -99,14 +98,6 @@ export const channelsRoutes: FastifyPluginAsync = async (app) => {
       // Auto-activate bot when first channel is connected
       if (bot.status === 'created') {
         await updateBot(request.userId, botId, { status: 'active' });
-      }
-
-      // Signal the web gateway manager to add this channel incrementally
-      const webGw = getWebGatewayManager();
-      if (webGw) {
-        webGw.addChannel(channelId).catch((err) => {
-          request.log.error({ err, botId }, 'Failed to add web channel to gateway');
-        });
       }
 
       return reply.status(201).send({
@@ -400,16 +391,6 @@ export const channelsRoutes: FastifyPluginAsync = async (app) => {
         const dingtalkGw = getDingTalkGatewayManager();
         if (dingtalkGw) {
           dingtalkGw.removeBot(botId);
-        }
-      }
-
-      // Signal the web gateway manager to remove this channel incrementally
-      if (channelType === 'web') {
-        const webGw = getWebGatewayManager();
-        if (webGw) {
-          webGw.removeChannel(channel.channelId).catch((err) => {
-            request.log.error({ err, botId }, 'Failed to remove web channel from gateway');
-          });
         }
       }
 
