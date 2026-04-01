@@ -99,6 +99,10 @@ docker push "${ECR_URI}/${ECR_AGENT_REPO}:latest"
 
 log "Step 6: CDK deploy all stacks"
 cd "$REPO_ROOT/infra"
+# Ensure CDK uses the same region as this script (deploy.sh defaults to us-west-2,
+# but app.ts falls back to us-east-1 — mismatch causes CannotPullContainerError
+# when ECR images are in a different region than the ECS service).
+CDK_DEFAULT_REGION="$REGION" CDK_DEFAULT_ACCOUNT="$ACCOUNT_ID" \
 npx cdk deploy --all --require-approval never \
   --context stage="$STAGE" \
   --outputs-file cdk-outputs.json

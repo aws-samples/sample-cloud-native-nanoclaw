@@ -13,7 +13,7 @@ const stage = process.env.CDK_STAGE ?? 'dev';
 
 const env: cdk.Environment = {
   account: process.env.CDK_DEFAULT_ACCOUNT,
-  region: process.env.CDK_DEFAULT_REGION ?? 'us-east-1',
+  region: process.env.CDK_DEFAULT_REGION ?? process.env.AWS_REGION ?? 'us-west-2',
 };
 
 const foundation = new FoundationStack(app, `NanoClawBot-${stage}-Foundation`, {
