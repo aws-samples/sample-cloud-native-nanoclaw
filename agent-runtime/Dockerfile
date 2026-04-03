@@ -90,8 +90,13 @@ COPY agent-runtime/templates/MANAGED_CLAUDE.md /etc/claude-code/CLAUDE.md
 # Workspace directories
 RUN mkdir -p /workspace/group /workspace/learnings /workspace/reference /workspace/extra /home/node/.claude
 
-# Pre-bundled skills
+# Pre-bundled skills (local)
 COPY agent-runtime/skills/ /home/node/.claude/skills/
+
+# Community skills from Anthropic
+RUN git clone --depth 1 https://github.com/anthropics/skills.git /tmp/skills \
+    && cp -r /tmp/skills/skills/* /home/node/.claude/skills/ \
+    && rm -rf /tmp/skills
 
 # Set ownership to non-root user
 RUN chown -R node:node /workspace /home/node/.claude /home/node
