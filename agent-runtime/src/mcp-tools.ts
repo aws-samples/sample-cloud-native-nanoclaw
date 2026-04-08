@@ -32,7 +32,7 @@ import {
 } from '@aws-sdk/client-scheduler';
 // cron-parser removed — AWS EventBridge validates cron expressions directly
 import type { ScopedClients } from './scoped-credentials.js';
-import type { ScheduledTask, SqsTextReplyPayload, SqsFileReplyPayload, ChannelType } from '@clawbot/shared';
+import type { ScheduledTask, SqsTextReplyPayload, SqsFileReplyPayload, ChannelType, InvocationPayload, InvocationResult, ReplyMetadata } from '@clawbot/shared';
 
 const REPLY_QUEUE_URL = process.env.SQS_REPLIES_URL || '';
 const TASKS_TABLE = process.env.TABLE_TASKS || '';
@@ -500,4 +500,70 @@ export function validateOnce(value: string): string | null {
     return `Invalid timestamp: "${value}". Use local time format like "2026-02-01T15:30:00".`;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Async invocation reply helpers (used by server.ts for fire-and-forget mode)
+// ---------------------------------------------------------------------------
+
+export async function sendFinalReply(
+  payload: InvocationPayload,
+  result: InvocationResult,
+): Promise<void> {
+  const replyPayload: SqsTextReplyPayload = {
+    type: 'reply',
+    botId: payload.botId,
+    groupJid: payload.groupJid,
+    channelType: payload.channelType,
+    text: result.result!,
+    timestamp: new Date().toISOString(),
+    replyContext: payload.replyContext,
+    metadata: {
+      isFinalReply: true,
+      newSessionId: result.newSessionId,
+      tokensUsed: result.tokensUsed,
+      model: payload.model,
+      modelProvider: payload.modelProvider,
+      userId: payload.userId,
+      sessionPath: payload.sessionPath,
+    },
+  };
+
+  const sqs = new SQSClient({});
+  await sqs.send(
+    new SendMessageCommand({
+      QueueUrl: REPLY_QUEUE_URL,
+      MessageBody: JSON.stringify(replyPayload),
+    }),
+  );
+}
+
+export async function sendErrorReply(
+  payload: InvocationPayload,
+  error: unknown,
+): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  const errorText = `Sorry, something went wrong while processing your message.\n\nError: ${message}`;
+
+  const replyPayload: SqsTextReplyPayload = {
+    type: 'reply',
+    botId: payload.botId,
+    groupJid: payload.groupJid,
+    channelType: payload.channelType,
+    text: errorText,
+    timestamp: new Date().toISOString(),
+    replyContext: payload.replyContext,
+    metadata: {
+      isError: true,
+      userId: payload.userId,
+    },
+  };
+
+  const sqs = new SQSClient({});
+  await sqs.send(
+    new SendMessageCommand({
+      QueueUrl: REPLY_QUEUE_URL,
+      MessageBody: JSON.stringify(replyPayload),
+    }),
+  );
 }
