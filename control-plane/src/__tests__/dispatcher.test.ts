@@ -148,12 +148,9 @@ describe('invokeAgent', () => {
   });
 });
 
-// ── NO_REPLY dispatch tests ───────────────────────────────────────────────
+// ── Async dispatch tests (fire-and-forget) ──────────────────────────────────
 
-describe('dispatch NO_REPLY handling', () => {
-  const mockPutMessage = vi.fn();
-  const mockPutSession = vi.fn();
-  const mockUpdateUserUsage = vi.fn();
+describe('dispatch async invoke handling', () => {
   const mockSendReply = vi.fn();
   const mockEnsureUser = vi.fn();
   const mockCheckAndAcquireAgentSlot = vi.fn();
@@ -180,9 +177,6 @@ describe('dispatch NO_REPLY handling', () => {
   beforeEach(async () => {
     vi.resetModules();
     mockSend.mockReset();
-    mockPutMessage.mockReset();
-    mockPutSession.mockReset();
-    mockUpdateUserUsage.mockReset();
     mockSendReply.mockReset();
     mockEnsureUser.mockReset();
     mockCheckAndAcquireAgentSlot.mockReset();
@@ -192,6 +186,7 @@ describe('dispatch NO_REPLY handling', () => {
     mockGetTask.mockReset();
     mockGetCachedBot.mockReset();
     (mockLogger.info as ReturnType<typeof vi.fn>).mockReset();
+    (mockLogger.error as ReturnType<typeof vi.fn>).mockReset();
 
     // Default mock behaviors
     mockGetCachedBot.mockResolvedValue({ name: 'TestBot', status: 'active', systemPrompt: 'You are a bot', model: 'claude-sonnet' });
@@ -201,9 +196,6 @@ describe('dispatch NO_REPLY handling', () => {
     mockGetGroup.mockResolvedValue({ isGroup: false, channelType: 'telegram' });
     mockGetSession.mockResolvedValue(null);
     mockGetTask.mockResolvedValue({ status: 'active', prompt: 'Run daily check' });
-    mockPutMessage.mockResolvedValue(undefined);
-    mockPutSession.mockResolvedValue(undefined);
-    mockUpdateUserUsage.mockResolvedValue(undefined);
 
     vi.doMock('@aws-sdk/client-bedrock-agentcore', () => ({
       BedrockAgentCoreClient: vi.fn().mockImplementation(() => ({ send: mockSend })),
@@ -224,10 +216,7 @@ describe('dispatch NO_REPLY handling', () => {
       getSession: mockGetSession,
       getRecentMessages: vi.fn().mockResolvedValue([]),
       ensureUser: mockEnsureUser,
-      putMessage: mockPutMessage,
-      putSession: mockPutSession,
       getTask: mockGetTask,
-      updateUserUsage: mockUpdateUserUsage,
       checkAndAcquireAgentSlot: mockCheckAndAcquireAgentSlot,
       releaseAgentSlot: mockReleaseAgentSlot,
     }));
@@ -246,8 +235,8 @@ describe('dispatch NO_REPLY handling', () => {
     dispatch = mod.dispatch;
   });
 
-  it('skips putMessage and sendReply when agent returns NO_REPLY for inbound message', async () => {
-    mockAgentResult({ status: 'success', result: 'NO_REPLY', tokensUsed: 100 });
+  it('does not send channel reply when agent returns accepted', async () => {
+    mockAgentResult({ status: 'accepted', result: null });
 
     const payload: SqsInboundPayload = {
       type: 'inbound_message',
@@ -262,16 +251,11 @@ describe('dispatch NO_REPLY handling', () => {
 
     await dispatch(makeSqsMessage(payload), mockLogger);
 
-    expect(mockPutMessage).not.toHaveBeenCalled();
     expect(mockSendReply).not.toHaveBeenCalled();
-    // Should still log the NO_REPLY
-    expect((mockLogger.info as ReturnType<typeof vi.fn>).mock.calls.some(
-      (call) => typeof call[1] === 'string' && call[1].includes('NO_REPLY'),
-    )).toBe(true);
   });
 
-  it('skips putMessage and sendReply when agent returns NO_REPLY with whitespace', async () => {
-    mockAgentResult({ status: 'success', result: '  NO_REPLY  \n', tokensUsed: 50 });
+  it('sends error reply when agent invocation is rejected', async () => {
+    mockAgentResult({ status: 'error', result: null, error: 'AgentCore unreachable' });
 
     const payload: SqsInboundPayload = {
       type: 'inbound_message',
@@ -279,19 +263,38 @@ describe('dispatch NO_REPLY handling', () => {
       groupJid: 'tg:123',
       userId: 'user-1',
       messageId: 'msg-2',
-      content: '  NO_REPLY  \n',
+      content: 'Hello',
       channelType: 'telegram',
       timestamp: new Date().toISOString(),
     };
 
     await dispatch(makeSqsMessage(payload), mockLogger);
 
-    expect(mockPutMessage).not.toHaveBeenCalled();
-    expect(mockSendReply).not.toHaveBeenCalled();
+    expect(mockSendReply).toHaveBeenCalledOnce();
+    expect((mockLogger.error as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
   });
 
-  it('skips putMessage and sendReply when agent returns NO_REPLY for scheduled task', async () => {
-    mockAgentResult({ status: 'success', result: 'NO_REPLY', tokensUsed: 80 });
+  it('releases agent slot even on invocation failure', async () => {
+    mockAgentResult({ status: 'error', result: null, error: 'Something went wrong' });
+
+    const payload: SqsInboundPayload = {
+      type: 'inbound_message',
+      botId: 'bot-1',
+      groupJid: 'tg:123',
+      userId: 'user-1',
+      messageId: 'msg-3',
+      content: 'Hello',
+      channelType: 'telegram',
+      timestamp: new Date().toISOString(),
+    };
+
+    await dispatch(makeSqsMessage(payload), mockLogger);
+
+    expect(mockReleaseAgentSlot).toHaveBeenCalledOnce();
+  });
+
+  it('dispatches scheduled task and logs rejection on non-accepted status', async () => {
+    mockAgentResult({ status: 'error', result: null, error: 'Runtime down' });
 
     const payload: SqsTaskPayload = {
       type: 'scheduled_task',
@@ -304,28 +307,7 @@ describe('dispatch NO_REPLY handling', () => {
 
     await dispatch(makeSqsMessage(payload), mockLogger);
 
-    expect(mockPutMessage).not.toHaveBeenCalled();
-    expect(mockSendReply).not.toHaveBeenCalled();
-  });
-
-  it('stores and sends reply when agent returns a normal response', async () => {
-    mockAgentResult({ status: 'success', result: 'Hello there!', tokensUsed: 200 });
-
-    const payload: SqsInboundPayload = {
-      type: 'inbound_message',
-      botId: 'bot-1',
-      groupJid: 'tg:123',
-      userId: 'user-1',
-      messageId: 'msg-3',
-      content: 'Tell me a joke',
-      channelType: 'telegram',
-      timestamp: new Date().toISOString(),
-    };
-
-    await dispatch(makeSqsMessage(payload), mockLogger);
-
-    expect(mockPutMessage).toHaveBeenCalledOnce();
-    expect(mockSendReply).toHaveBeenCalledOnce();
+    expect((mockLogger.error as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
   });
 });
 

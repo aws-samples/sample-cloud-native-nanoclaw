@@ -7,7 +7,7 @@ import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
-import { formatOutbound } from '@clawbot/shared';
+
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
@@ -22,19 +22,15 @@ import type {
   SqsInboundPayload,
   SqsPayload,
   SqsTaskPayload,
-  Message,
 } from '@clawbot/shared';
 import type { ModelProvider, ProviderType, Session } from '@clawbot/shared';
 import { config } from '../config.js';
 import {
   getGroup,
   ensureUser,
-  putMessage,
-  putSession,
   getSession,
   getTask,
   getRecentMessages,
-  updateUserUsage,
   checkAndAcquireAgentSlot,
   releaseAgentSlot,
   getChannelsByBot,
@@ -61,11 +57,6 @@ export function shouldResetSession(
   if (!session) return false;
   if (!session.lastModel && !session.lastModelProvider) return false;
   return session.lastModel !== currentModel || session.lastModelProvider !== currentProvider;
-}
-
-/** Check if agent result is a silent NO_REPLY (nothing to send) */
-function isSilentReply(result: string | null | undefined): boolean {
-  return result?.trim() === 'NO_REPLY';
 }
 
 /** Max recent messages to include as group chat context */
@@ -376,6 +367,7 @@ async function dispatchMessage(
       ...(forceNewSession && { forceNewSession: true }),
       ...(proxyRules.length > 0 && { proxyRules }),
       ...(bot.toolWhitelist && { toolWhitelist: bot.toolWhitelist }),
+      ...(payload.replyContext && { replyContext: payload.replyContext }),
     };
 
     const skillPrefixes = await resolveSkillPrefixes(bot);
@@ -389,87 +381,19 @@ async function dispatchMessage(
       'Invoking agent',
     );
 
-    // 8. Invoke AgentCore
+    // 8. Invoke AgentCore (async — returns immediately with ack)
     const result = await invokeAgent(invocationPayload, logger);
 
-    // 9. Store bot reply in DynamoDB
-    if (result.status === 'success' && result.result) {
-      if (isSilentReply(result.result)) {
-        logger.info({ botId: payload.botId, groupJid: payload.groupJid }, 'Agent returned NO_REPLY, skipping response');
-      } else {
-        const replyText = formatOutbound(result.result);
-        if (replyText) {
-          await putMessage({
-            botId: payload.botId,
-            groupJid: payload.groupJid,
-            timestamp: new Date().toISOString(),
-            messageId: `bot-${Date.now()}`,
-            sender: bot.name,
-            senderName: bot.name,
-            content: replyText,
-            isFromMe: true,
-            isBotMessage: true,
-            channelType: payload.channelType,
-            ttl: Math.floor(Date.now() / 1000) + 90 * 24 * 3600,
-          });
-
-          // 9. Send reply via channel adapter
-          const durationMs = Date.now() - startTime;
-          await sendChannelReply(
-            payload.botId,
-            payload.groupJid,
-            payload.channelType,
-            replyText,
-            logger,
-            payload.replyContext,
-            {
-              metadata: {
-                durationMs,
-                tokenCount: result.tokensUsed,
-              },
-            },
-          );
-        }
-      }
-    } else if (result.status === 'error') {
-      logger.error(
-        { botId: payload.botId, error: result.error },
-        'Agent invocation failed',
-      );
-
-      // Notify the user about the error so they're not left waiting.
-      // TODO: Sanitize before production — raw error may contain ARNs, bucket names, userId.
-      // Currently acceptable for dev (no external access), but must be replaced with a
-      // generic message before public deployment.
-      const errorText = `Sorry, something went wrong while processing your message.\n\nError: ${result.error || 'Unknown error'}`;
+    if (result.status !== 'accepted') {
+      // Ack-level failure (e.g. ARN not configured, AgentCore unreachable)
+      logger.error({ botId: payload.botId, error: result.error }, 'Agent invocation rejected');
       await sendChannelReply(
         payload.botId,
         payload.groupJid,
         payload.channelType,
-        errorText,
+        `Failed to start processing: ${result.error || 'Unknown error'}`,
         logger,
         payload.replyContext,
-      );
-    }
-
-    // 10. Update session (always record model/provider for change detection)
-    if (result.newSessionId) {
-      await putSession({
-        botId: payload.botId,
-        groupJid: payload.groupJid,
-        agentcoreSessionId: result.newSessionId,
-        s3SessionPath: invocationPayload.sessionPath,
-        lastActiveAt: new Date().toISOString(),
-        status: 'active',
-        lastModel: effectiveModel,
-        lastModelProvider: effectiveProvider,
-      });
-    }
-
-    // 11. Track usage
-    if (result.tokensUsed) {
-      await updateUserUsage(payload.userId, result.tokensUsed).catch((err) =>
-        logger.error(err, 'Failed to update user usage'),
       );
     }
 
@@ -564,51 +488,17 @@ async function dispatchTask(
 
   const result = await invokeAgent(invocationPayload, logger);
 
-  if (result.status === 'success' && result.result) {
-    if (isSilentReply(result.result)) {
-      logger.info({ botId: payload.botId, groupJid: payload.groupJid }, 'Agent returned NO_REPLY, skipping response');
-    } else {
-      const replyText = formatOutbound(result.result);
-      if (replyText) {
-        await putMessage({
-          botId: payload.botId,
-          groupJid: payload.groupJid,
-          timestamp: new Date().toISOString(),
-          messageId: `task-${payload.taskId}-${Date.now()}`,
-          sender: bot.name,
-          senderName: bot.name,
-          content: replyText,
-          isFromMe: true,
-          isBotMessage: true,
-          channelType,
-          ttl: Math.floor(Date.now() / 1000) + 90 * 24 * 3600,
-        });
-
-        // Send reply via channel API
-        await sendChannelReply(
-          payload.botId,
-          payload.groupJid,
-          channelType,
-          replyText,
-          logger,
-        );
-      }
-    }
+  if (result.status !== 'accepted') {
+    logger.error(
+      { botId: payload.botId, taskId: payload.taskId, error: result.error },
+      'Scheduled task invocation rejected',
+    );
   }
 
-  // Update session with model/provider for change detection
-  if (result.newSessionId) {
-    await putSession({
-      botId: payload.botId,
-      groupJid: payload.groupJid,
-      agentcoreSessionId: result.newSessionId,
-      s3SessionPath: invocationPayload.sessionPath,
-      lastActiveAt: new Date().toISOString(),
-      status: 'active',
-      lastModel: effectiveModel,
-      lastModelProvider: effectiveProvider,
-    });
-  }
+  logger.info(
+    { botId: payload.botId, taskId: payload.taskId, status: result.status },
+    'Scheduled task dispatch complete',
+  );
 }
 
 // ── Skill Resolution ─────────────────────────────────────────────────────────
