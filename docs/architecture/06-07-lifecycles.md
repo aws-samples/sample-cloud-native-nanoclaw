@@ -28,32 +28,38 @@
   │   └── 并发 Agent 槽位 (原子 DDB 递增, maxConcurrentAgents)
   ├── 加载近期消息 (Query, 逆序最近 50 条, 过滤 bot 消息)
   ├── 格式化为 XML (formatMessages)
-  ├── 构建 InvocationPayload (含 memoryPaths: 7 个 S3 路径)
-  └── InvokeAgentRuntime(runtimeSessionId, payload)
-      → 同步等待, 无超时限制
+  ├── 构建 InvocationPayload (含 memoryPaths, replyContext)
+  ├── InvokeAgentRuntime(runtimeSessionId, payload)
+  │   → 异步 fire-and-forget, 立即返回 { status: 'accepted' }
+  ├── 释放 Agent 槽位 (releaseAgentSlot)
+  └── sqs.deleteMessage() 确认消费
 
-步骤 4: AgentCore Runtime (microVM)
-  ├── /invocations 端点收到请求, setBusy()
-  ├── STS AssumeRole (ABAC: userId + botId tags)
-  ├── Session 切换检测 → 不同 bot/group 则清理 workspace
-  ├── syncFromS3: 恢复 session + 7 个 context 文件
-  ├── 模板检查: 首次运行 → 复制 IDENTITY/SOUL/BOOTSTRAP/USER 默认模板
-  ├── detectExistingSession() → 判断 isNewSession
-  ├── buildSystemPrompt() → 9 Section 结构化系统提示词
-  ├── Claude Agent SDK query() 处理消息
-  │   ├── Bedrock Claude (CLAUDE_CODE_USE_BEDROCK=1)
-  │   ├── MCP 工具: send_message → SQS 回复队列 (中间消息)
-  │   └── PreCompact hook: 归档对话到 conversations/
-  ├── syncToS3: 回写 session + CLAUDE.md + context 文件
-  └── 返回 InvocationResult, setIdle()
+步骤 4: AgentCore Runtime (microVM, 后台执行)
+  ├── /invocations 收到请求, setBusy(), 立即返回 accepted
+  ├── 后台执行 runInBackground():
+  │   ├── STS AssumeRole (ABAC: userId + botId tags)
+  │   ├── Session 切换检测 → 不同 bot/group 则清理 workspace
+  │   ├── syncFromS3: 恢复 session + 7 个 context 文件
+  │   ├── 模板检查: 首次运行 → 复制 IDENTITY/SOUL/BOOTSTRAP/USER 默认模板
+  │   ├── detectExistingSession() → 判断 isNewSession
+  │   ├── buildSystemPrompt() → 9 Section 结构化系统提示词
+  │   ├── Claude Agent SDK query() 处理消息
+  │   │   ├── Bedrock Claude (CLAUDE_CODE_USE_BEDROCK=1)
+  │   │   ├── MCP 工具: send_message → SQS 回复队列 (中间消息)
+  │   │   └── PreCompact hook: 归档对话到 conversations/
+  │   ├── syncToS3: 回写 session + CLAUDE.md + context 文件
+  │   └── sendFinalReply() → SQS 回复队列 (含 session/usage metadata)
+  ├── 失败 → sendErrorReply() → SQS 回复队列 (通知用户)
+  └── finally: setIdle()
+  执行期间 /ping 返回 HealthyBusy, 完成后返回 Healthy
 
-步骤 5: Fargate SQS Consumer (收到结果)
-  ├── 写入 DynamoDB messages 表 (Bot 回复, TTL = +90天)
+步骤 5: Fargate Reply Consumer (收到 SQS 回复)
   ├── 通过 Channel Adapter Registry 发送回复
   │   └── registry.get(channelType) → adapter.sendReply(ctx, text)
-  ├── 更新 DynamoDB sessions 表
-  ├── 更新用量统计 (updateUserUsage)
-  ├── 释放 Agent 槽位 (releaseAgentSlot)
+  ├── 处理 metadata (最终回复携带):
+  │   ├── 写入 DynamoDB messages 表 (Bot 回复, TTL = +90天)
+  │   ├── 更新 DynamoDB sessions 表
+  │   └── 更新用量统计 (updateUserUsage)
   └── sqs.deleteMessage() 确认消费
 
 步骤 6: 用户在 Telegram 收到回复
@@ -91,7 +97,8 @@ Discord 使用 Gateway (WebSocket) 接收消息，而非 Webhook：
 - Webhook 处理失败 → ALB 返回 500，Telegram 会重试
 - SQS 消息处理失败 → VisibilityTimeout 到期后自动重新可见 → 重试
 - 重试 3 次仍失败 → 进入 DLQ (死信队列)，触发告警
-- AgentCore 调用失败 → 不删除 SQS 消息，等待重试
+- AgentCore ack 失败 → 不删除 SQS 消息，等待重试
+- Agent 后台执行失败 → sendErrorReply() 通过 SQS 回复队列通知用户
 - Session 恢复失败 → 创建新 session，丢失上下文但不丢消息
 - Fargate Task 崩溃 → ECS 自动重启 + ALB 健康检查摘除
 

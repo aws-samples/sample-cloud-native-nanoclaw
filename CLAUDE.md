@@ -69,11 +69,11 @@ web-console (standalone — talks to control-plane via REST)
 
 ### Message flow
 
-User message → Channel webhook/Gateway → Control Plane (signature verification, DynamoDB store) → SQS FIFO → SQS consumer (quota check, concurrency control) → AgentCore invocation → Claude Agent SDK `query()` (preset append mode, native CLAUDE.md) → MCP tools → response stored in DynamoDB → Channel Adapter Registry → Channel API reply.
+User message → Channel webhook/Gateway → Control Plane (signature verification, DynamoDB store) → SQS FIFO → SQS consumer (quota check, concurrency control) → AgentCore invocation (async fire-and-forget, returns `accepted` immediately) → Agent runs in background → Claude Agent SDK `query()` (preset append mode, native CLAUDE.md) → MCP tools → final reply via SQS reply queue (with session/usage metadata) → Reply Consumer → Channel Adapter Registry → Channel API reply + DynamoDB store + session update + usage tracking.
 
 Agent intermediate messages: MCP `send_message` → SQS Standard reply queue → Reply Consumer → Channel Adapter → Channel API.
 
-SQS FIFO provides per-group message ordering with cross-group parallelism. Discord and Feishu use Gateway (WebSocket) with DynamoDB-based leader election instead of webhooks.
+SQS FIFO provides per-group message ordering with cross-group parallelism. Discord and Feishu use Gateway (WebSocket) with DynamoDB-based leader election instead of webhooks. The async invocation model ensures `/ping` always responds during agent execution, preventing AgentCore's 15-minute session timeout.
 
 ### Security model
 
