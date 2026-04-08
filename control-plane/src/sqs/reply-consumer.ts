@@ -12,7 +12,7 @@ import { config } from '../config.js';
 import { getRegistry } from '../adapters/registry.js';
 import { formatOutbound } from '@clawbot/shared/text-utils';
 import type { ReplyContext } from '@clawbot/shared/channel-adapter';
-import type { ChannelType, SqsReplyPayload, SqsTextReplyPayload, ReplyMetadata } from '@clawbot/shared';
+import type { ChannelType, ModelProvider, SqsReplyPayload, SqsTextReplyPayload, ReplyMetadata } from '@clawbot/shared';
 import type { Logger } from 'pino';
 import {
   putMessage,
@@ -194,23 +194,22 @@ async function processReplyMetadata(
 ): Promise<void> {
   try {
     // Store bot reply in DynamoDB (moved from dispatcher)
+    // text is already formatted via formatOutbound() in the text reply path above
     if (meta.isFinalReply && text) {
-      const formattedText = formatOutbound(text);
-      if (formattedText) {
-        await putMessage({
-          botId,
-          groupJid,
-          timestamp,
-          messageId: `bot-${Date.now()}`,
-          sender: 'bot',
-          senderName: 'bot',
-          content: formattedText,
-          isFromMe: true,
-          isBotMessage: true,
-          channelType: channelType as ChannelType,
-          ttl: Math.floor(Date.now() / 1000) + 90 * 24 * 3600,
-        });
-      }
+      const senderName = meta.botName || 'bot';
+      await putMessage({
+        botId,
+        groupJid,
+        timestamp,
+        messageId: `bot-${Date.now()}`,
+        sender: senderName,
+        senderName,
+        content: text,
+        isFromMe: true,
+        isBotMessage: true,
+        channelType: channelType as ChannelType,
+        ttl: Math.floor(Date.now() / 1000) + 90 * 24 * 3600,
+      });
     }
 
     // Update session
@@ -223,7 +222,7 @@ async function processReplyMetadata(
         lastActiveAt: new Date().toISOString(),
         status: 'active',
         lastModel: meta.model,
-        lastModelProvider: meta.modelProvider as any,
+        lastModelProvider: meta.modelProvider as ModelProvider,
       });
     }
 

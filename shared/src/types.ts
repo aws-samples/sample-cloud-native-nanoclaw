@@ -341,6 +341,7 @@ export interface ReplyMetadata {
   modelProvider?: string;
   userId?: string;
   sessionPath?: string;
+  botName?: string;
   isError?: boolean;
 }
 

@@ -35,6 +35,7 @@ import type { ScopedClients } from './scoped-credentials.js';
 import type { ScheduledTask, SqsTextReplyPayload, SqsFileReplyPayload, ChannelType, InvocationPayload, InvocationResult, ReplyMetadata } from '@clawbot/shared';
 
 const REPLY_QUEUE_URL = process.env.SQS_REPLIES_URL || '';
+const replySqs = new SQSClient({});
 const TASKS_TABLE = process.env.TABLE_TASKS || '';
 const SCHEDULER_ROLE_ARN = process.env.SCHEDULER_ROLE_ARN || '';
 const MESSAGES_QUEUE_ARN = process.env.SQS_MESSAGES_ARN || '';
@@ -69,8 +70,7 @@ export async function sendMessage(
   };
 
   // Reply queue uses the runtime's own credentials (not scoped)
-  const sqs = new SQSClient({});
-  await sqs.send(
+  await replySqs.send(
     new SendMessageCommand({
       QueueUrl: REPLY_QUEUE_URL,
       MessageBody: JSON.stringify(payload),
@@ -137,8 +137,7 @@ export async function sendFile(
     timestamp: new Date().toISOString(),
   };
 
-  const sqs = new SQSClient({});
-  await sqs.send(
+  await replySqs.send(
     new SendMessageCommand({
       QueueUrl: REPLY_QUEUE_URL,
       MessageBody: JSON.stringify(payload),
@@ -526,11 +525,11 @@ export async function sendFinalReply(
       modelProvider: payload.modelProvider,
       userId: payload.userId,
       sessionPath: payload.sessionPath,
+      botName: payload.botName,
     },
   };
 
-  const sqs = new SQSClient({});
-  await sqs.send(
+  await replySqs.send(
     new SendMessageCommand({
       QueueUrl: REPLY_QUEUE_URL,
       MessageBody: JSON.stringify(replyPayload),
@@ -559,8 +558,7 @@ export async function sendErrorReply(
     },
   };
 
-  const sqs = new SQSClient({});
-  await sqs.send(
+  await replySqs.send(
     new SendMessageCommand({
       QueueUrl: REPLY_QUEUE_URL,
       MessageBody: JSON.stringify(replyPayload),
