@@ -35,7 +35,6 @@ import type { InvocationPayload, InvocationResult, Attachment, ResolvedMcpConfig
 import { syncFromS3, syncToS3, clearSessionDirectory, syncMemoryOnlyFromS3, downloadSkills, type SyncPaths } from './session.js';
 import { buildAppendContent } from './system-prompt.js';
 import { getScopedClients } from './scoped-credentials.js';
-import { setBusy, setIdle } from './server.js';
 import { startCredentialProxy, type CredentialProxy } from './credential-proxy.js';
 import { createToolWhitelistHook } from './tool-whitelist.js';
 
@@ -200,12 +199,7 @@ export async function handleInvocation(
   payload: InvocationPayload,
   logger: pino.Logger,
 ): Promise<InvocationResult> {
-  setBusy();
-  try {
-    return await _handleInvocation(payload, logger);
-  } finally {
-    setIdle();
-  }
+  return _handleInvocation(payload, logger);
 }
 
 async function _handleInvocation(

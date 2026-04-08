@@ -197,7 +197,7 @@ Fargate 模式: 进程内缓存 (TTL 5min)
 
 ### 4.4 SQS Inbound Consumer (后台线程)
 
-同一 Fargate 进程内的后台消费者，无超时限制：
+同一 Fargate 进程内的后台消费者，采用异步 fire-and-forget 模式：
 
 ```
 SQS Inbound Consumer (后台长轮询, consumer.ts → dispatcher.ts)
@@ -213,14 +213,12 @@ SQS Inbound Consumer (后台长轮询, consumer.ts → dispatcher.ts)
     ├── 4. 从 DynamoDB 加载近期消息 (逆序取最近 50 条, 过滤 bot 消息)
     ├── 5. 格式化为 XML (formatMessages, NanoClaw router 格式)
     ├── 6. 解析模型供应商 (Bot.providerId → Providers 表 → 凭证 + modelId)
-    ├── 7. 构建 InvocationPayload (含 memoryPaths, 供应商凭证, 飞书工具配置)
-    ├── 8. InvokeAgentRuntimeCommand (同步等待, 无超时限制)
-    ├── 9. 写入 DynamoDB (bot 消息记录, TTL = +90天)
-    ├── 10. 通过 Channel Adapter Registry 发送回复
-    │      (sendChannelReply → adapter.sendReply)
-    ├── 11. 更新 session 记录 (DynamoDB sessions 表)
-    ├── 12. 更新用量统计 (updateUserUsage)
-    └── 13. sqs.deleteMessage() 确认消费 (失败则不删, VisibilityTimeout 后重试)
+    ├── 7. 构建 InvocationPayload (含 memoryPaths, 供应商凭证, 飞书工具配置, replyContext)
+    ├── 8. InvokeAgentRuntimeCommand (异步 — 立即返回 { status: 'accepted' })
+    │      Agent 在后台执行，结果通过 SQS Reply Queue 回传
+    ├── 9. 检查 ack 状态 (非 accepted 则通知 Channel 调用失败)
+    ├── 10. 释放 Agent 槽位 (releaseAgentSlot)
+    └── 11. sqs.deleteMessage() 确认消费 (失败则不删, VisibilityTimeout 后重试)
 
     并发控制: Semaphore(MAX_CONCURRENT_DISPATCHES=20)
     释放: finally 块中 releaseAgentSlot(), semaphore.release()
@@ -228,16 +226,20 @@ SQS Inbound Consumer (后台长轮询, consumer.ts → dispatcher.ts)
 
 ### 4.5 SQS Reply Consumer (后台线程)
 
-消费 Agent 通过 `send_message` MCP 工具发送的中间回复：
+消费 Agent 回复消息：包括 MCP `send_message` 发送的中间消息，以及异步调用完成后的最终回复（含 session/usage metadata）。
 
 ```
 SQS Reply Consumer (后台长轮询, reply-consumer.ts)
     │
     │ sqs.receiveMessage({ WaitTimeSeconds: 20, VisibilityTimeout: 60 })
     │
-    ├── 1. 解析 SqsReplyPayload (botId, groupJid, channelType, text)
+    ├── 1. 解析 SqsReplyPayload (botId, groupJid, channelType, text, metadata?)
     ├── 2. 查找 Channel Adapter (registry.get(channelType))
-    └── 3. adapter.sendReply(ctx, text) → 频道 API
+    ├── 3. adapter.sendReply(ctx, formattedText) → 频道 API
+    └── 4. 处理 metadata (仅最终回复携带):
+           ├── isFinalReply → 写入 DynamoDB messages 表 (bot 回复记录)
+           ├── newSessionId → 更新 DynamoDB sessions 表
+           └── tokensUsed   → 更新用量统计 (updateUserUsage)
 ```
 
 ### 4.6 Channel Adapter Registry

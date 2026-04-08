@@ -277,10 +277,10 @@ cloud_native_nanoclaw/
 1. User sends `@Bot hello` in Telegram group
 2. Telegram POST → `/webhook/telegram/{bot_id}` (ALB → Fargate)
 3. Webhook handler verifies signature, stores message in DynamoDB, enqueues to SQS FIFO
-4. SQS consumer dequeues, loads recent messages, formats XML context
-5. Invokes AgentCore Runtime → Claude Agent SDK `query()`
+4. SQS consumer dequeues, loads recent messages, invokes AgentCore Runtime (async fire-and-forget)
+5. AgentCore returns `accepted` immediately, agent runs in background → Claude Agent SDK `query()`
 6. Agent generates response, optionally uses MCP tools (schedule_task, send_message)
-7. Response stored in DynamoDB, sent back via Telegram API
+7. Final reply sent via SQS reply queue → Reply Consumer stores in DynamoDB, sends via Telegram API
 8. User sees reply in Telegram
 
 ## Security

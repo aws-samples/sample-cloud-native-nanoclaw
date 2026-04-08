@@ -28,15 +28,16 @@ aws bedrock-agentcore-control create-agent-runtime \
 
 脚本会先检查同名 runtime 是否已存在 (幂等)，创建后轮询 `get-agent-runtime` 直到状态为 `READY`。
 
-**调用方式 (Dispatcher → AgentCore):**
+**调用方式 (Dispatcher → AgentCore) — 异步 Fire-and-Forget:**
 
-Control Plane 使用 `@aws-sdk/client-bedrock-agentcore` SDK 调用，而非直接 HTTP:
+Control Plane 使用 `@aws-sdk/client-bedrock-agentcore` SDK 调用，采用异步模式:
 
 ```typescript
 import { BedrockAgentCoreClient, InvokeAgentRuntimeCommand } from '@aws-sdk/client-bedrock-agentcore';
 
 const agentcoreClient = new BedrockAgentCoreClient({ region });
 
+// Dispatcher 发送调用请求，Agent Runtime 立即返回 { status: 'accepted' }
 const response = await agentcoreClient.send(new InvokeAgentRuntimeCommand({
   agentRuntimeArn: config.agentcore.runtimeArn,
   payload: Buffer.from(JSON.stringify(invocationPayload)),
@@ -46,10 +47,12 @@ const response = await agentcoreClient.send(new InvokeAgentRuntimeCommand({
 }));
 
 const resultText = await response.response?.transformToString();
-const body = JSON.parse(resultText) as { output: InvocationResult };
+const body = JSON.parse(resultText) as InvocationResult; // { status: 'accepted' }
 ```
 
 使用 AWS SDK 而非 `fetch()` 的优势: 自动处理 IAM SigV4 签名、重试、区域路由。
+
+**异步执行模型:** `/invocations` 收到请求后立即返回 `{ status: 'accepted' }`，Agent 在后台执行。执行完成后通过 SQS Reply Queue 发送最终回复（含 session/usage metadata）。这避免了同步阻塞导致 `/ping` 无法响应、AgentCore 15 分钟超时终止 session 的问题。
 
 ### 9.2 容器架构
 
@@ -187,16 +190,33 @@ app.get('/ping', async () => ({
   time_of_last_update: Math.floor(Date.now() / 1000),
 }));
 
-// Agent 调用入口
+// Agent 调用入口 — 异步 fire-and-forget
 app.post('/invocations', async (req, reply) => {
-  const result = await handleInvocation(req.body as InvocationPayload);
-  return reply.send({ output: result });
+  const payload = req.body as InvocationPayload;
+  setBusy();
+  // 后台执行，立即返回 ack
+  runInBackground(payload).catch(err => logger.error(err));
+  return reply.send({ status: 'accepted' });
 });
+
+// 后台执行: Agent 完成后通过 SQS Reply Queue 发送结果
+async function runInBackground(payload: InvocationPayload) {
+  try {
+    const result = await handleInvocation(payload);
+    if (result.status === 'success' && result.result) {
+      await sendFinalReply(payload, result); // → SQS Reply Queue
+    }
+  } catch (error) {
+    await sendErrorReply(payload, error);    // → SQS Reply Queue
+  } finally {
+    setIdle();
+  }
+}
 
 app.listen({ port: 8080, host: '0.0.0.0' });
 ```
 
-**关键：`/ping` 必须在独立线程响应。** AgentCore 通过 `/ping` 判断 session 是否存活。如果主线程被 `query()` 阻塞导致 `/ping` 不响应，AgentCore 会在 15 分钟后终止 session。Fastify 在 Node.js 事件循环中处理 HTTP，而 `query()` 是 async 的（内部 spawn 子进程），不会阻塞事件循环。
+**关键：异步 fire-and-forget 模式。** `/invocations` 立即返回 `{ status: 'accepted' }`，Agent 在后台执行。执行期间 `/ping` 返回 `HealthyBusy`，完成后返回 `Healthy`。结果通过 SQS Reply Queue 回传给 Control Plane 的 Reply Consumer，由其负责发送 Channel 回复、更新 session、追踪 usage。这确保无论 Agent 执行多长时间，`/ping` 都能正常响应，避免 AgentCore 15 分钟超时问题。
 
 #### 调用处理 `handler.ts`
 

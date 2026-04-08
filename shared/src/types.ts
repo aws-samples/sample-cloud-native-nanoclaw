@@ -286,6 +286,7 @@ export interface InvocationPayload {
   /** Enabled skill IDs — agent runtime downloads these to ~/.claude/skills/ */
   skills?: string[];
   mcpConfigs?: ResolvedMcpConfig[];
+  replyContext?: SqsReplyContext;
 }
 
 /** Proxy rule passed through invocation payload (secrets included). */
@@ -323,7 +324,7 @@ export interface MemoryPaths {
 
 // Evolved from NanoClaw's ContainerOutput (stdout markers)
 export interface InvocationResult {
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'accepted';
   result: string | null;
   newSessionId?: string;
   tokensUsed?: number;
@@ -331,6 +332,18 @@ export interface InvocationResult {
 }
 
 // --- SQS Reply Payload (agent → control plane) ---
+
+export interface ReplyMetadata {
+  isFinalReply?: boolean;
+  newSessionId?: string;
+  tokensUsed?: number;
+  model?: string;
+  modelProvider?: string;
+  userId?: string;
+  sessionPath?: string;
+  botName?: string;
+  isError?: boolean;
+}
 
 export interface SqsTextReplyPayload {
   type: 'reply';
@@ -340,6 +353,7 @@ export interface SqsTextReplyPayload {
   text: string;
   timestamp: string;
   replyContext?: SqsReplyContext;
+  metadata?: ReplyMetadata;
 }
 
 export interface SqsFileReplyPayload {
