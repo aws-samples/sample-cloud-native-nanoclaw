@@ -139,6 +139,7 @@ Introduce yourself naturally. Figure out together with your user:
 3. **About them** — What's their name? How do they prefer to communicate?
 
 Don't interrogate. Just talk. Fill in the sections above as you learn.
+After you filled the sections, then delete this `## First Run` section.
 
 ## Make It Yours
 
