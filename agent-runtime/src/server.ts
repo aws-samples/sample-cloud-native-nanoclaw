@@ -11,7 +11,9 @@
 import Fastify from 'fastify';
 import pino from 'pino';
 import { handleInvocation } from './agent.js';
-import type { InvocationPayload, InvocationResult } from '@clawbot/shared';
+import { sendFinalReply, sendErrorReply } from './mcp-tools.js';
+import type { InvocationPayload } from '@clawbot/shared';
+import { formatOutbound } from '@clawbot/shared/text-utils';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 const port = Number(process.env.PORT) || 8080;
@@ -28,27 +30,47 @@ app.get('/ping', async () => {
   return { status: busy ? 'HealthyBusy' : 'Healthy' };
 });
 
-// Agent execution endpoint
+// Agent execution endpoint — async fire-and-forget
 app.post<{ Body: InvocationPayload }>('/invocations', async (request, reply) => {
   const payload = request.body;
   logger.info({ botId: payload.botId, groupJid: payload.groupJid }, 'Invocation received');
 
+  setBusy();
+
+  // Fire-and-forget: run in background, respond immediately
+  runInBackground(payload).catch((err) => {
+    logger.error(err, 'Background invocation crashed unexpectedly');
+  });
+
+  return reply.send({ status: 'accepted' });
+});
+
+async function runInBackground(payload: InvocationPayload): Promise<void> {
   try {
     const result = await handleInvocation(payload, logger);
-    return reply.send(result);
+
+    if (result.status === 'success' && result.result) {
+      const text = result.result.trim();
+      if (text !== 'NO_REPLY') {
+        await sendFinalReply(payload, {
+          ...result,
+          result: formatOutbound(result.result),
+        });
+      }
+    } else if (result.status === 'error') {
+      await sendErrorReply(payload, new Error(result.error || 'Unknown agent error')).catch((e) => {
+        logger.error(e, 'Failed to send error notification');
+      });
+    }
   } catch (error) {
-    logger.error(error, 'Invocation failed');
-    // Include env diagnostics in error response for ABAC debugging
-    const envDebug = `SCOPED_ROLE_ARN=${process.env.SCOPED_ROLE_ARN || '(empty)'}, SESSION_BUCKET=${process.env.SESSION_BUCKET || '(empty)'}, AWS_REGION=${process.env.AWS_REGION || '(empty)'}`;
-    const result: InvocationResult = {
-      status: 'error',
-      result: null,
-      error: `${error instanceof Error ? error.message : 'Unknown error'} [ENV: ${envDebug}] [userId=${payload.userId}, botId=${payload.botId}]`,
-    };
-    // 200 even on agent error — AgentCore contract treats HTTP errors as infra failures
-    return reply.status(200).send(result);
+    logger.error(error, 'Background invocation failed');
+    await sendErrorReply(payload, error).catch((e) => {
+      logger.error(e, 'Failed to send error notification');
+    });
+  } finally {
+    setIdle();
   }
-});
+}
 
 app.listen({ port, host: '0.0.0.0' }).then(() => {
   logger.info(`Agent runtime listening on port ${port}`);
