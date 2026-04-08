@@ -10,9 +10,15 @@ import {
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { config } from '../config.js';
 import { getRegistry } from '../adapters/registry.js';
+import { formatOutbound } from '@clawbot/shared/text-utils';
 import type { ReplyContext } from '@clawbot/shared/channel-adapter';
-import type { ChannelType, SqsReplyPayload } from '@clawbot/shared';
+import type { ChannelType, SqsReplyPayload, SqsTextReplyPayload, ReplyMetadata } from '@clawbot/shared';
 import type { Logger } from 'pino';
+import {
+  putMessage,
+  putSession,
+  updateUserUsage,
+} from '../services/dynamo.js';
 
 let running = false;
 
@@ -120,7 +126,26 @@ async function replyLoop(logger: Logger): Promise<void> {
               );
             }
           } else {
-            await adapter.sendReply(ctx, payload.text);
+            const formattedText = formatOutbound(payload.text);
+            if (formattedText) {
+              await adapter.sendReply(ctx, formattedText);
+            }
+          }
+
+          // Process metadata for session/usage tracking (async invocation path)
+          if (payload.type === 'reply') {
+            const textPayload = payload as SqsTextReplyPayload;
+            if (textPayload.metadata) {
+              await processReplyMetadata(
+                payload.botId,
+                payload.groupJid,
+                payload.channelType,
+                payload.text,
+                payload.timestamp,
+                textPayload.metadata,
+                logger,
+              );
+            }
           }
 
           // Delete message on success
@@ -156,4 +181,59 @@ async function replyLoop(logger: Logger): Promise<void> {
   }
 
   logger.info('Reply consumer stopped');
+}
+
+async function processReplyMetadata(
+  botId: string,
+  groupJid: string,
+  channelType: string,
+  text: string,
+  timestamp: string,
+  meta: ReplyMetadata,
+  logger: Logger,
+): Promise<void> {
+  try {
+    // Store bot reply in DynamoDB (moved from dispatcher)
+    if (meta.isFinalReply && text) {
+      const formattedText = formatOutbound(text);
+      if (formattedText) {
+        await putMessage({
+          botId,
+          groupJid,
+          timestamp,
+          messageId: `bot-${Date.now()}`,
+          sender: 'bot',
+          senderName: 'bot',
+          content: formattedText,
+          isFromMe: true,
+          isBotMessage: true,
+          channelType: channelType as ChannelType,
+          ttl: Math.floor(Date.now() / 1000) + 90 * 24 * 3600,
+        });
+      }
+    }
+
+    // Update session
+    if (meta.newSessionId) {
+      await putSession({
+        botId,
+        groupJid,
+        agentcoreSessionId: meta.newSessionId,
+        s3SessionPath: meta.sessionPath || '',
+        lastActiveAt: new Date().toISOString(),
+        status: 'active',
+        lastModel: meta.model,
+        lastModelProvider: meta.modelProvider as any,
+      });
+    }
+
+    // Track token usage
+    if (meta.tokensUsed && meta.userId) {
+      await updateUserUsage(meta.userId, meta.tokensUsed).catch((err) =>
+        logger.error(err, 'Failed to update user usage'),
+      );
+    }
+  } catch (err) {
+    logger.error({ err, botId, groupJid }, 'Failed to process reply metadata');
+  }
 }
