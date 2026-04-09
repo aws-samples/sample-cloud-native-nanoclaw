@@ -10,9 +10,13 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PREFIX="nanoclawbot"
 STACK_PREFIX="NanoClawBot-${STAGE}"
 
+# Deploy mode: "agentcore" (default, uses Bedrock AgentCore) or "ecs" (China regions, pure ECS)
+DEPLOY_MODE="${DEPLOY_MODE:-agentcore}"
+
 # ECR repository names
 ECR_CP_REPO="${PREFIX}-control-plane"
 ECR_AGENT_REPO="${PREFIX}-agent"
+ECR_AUTH_REPO="${PREFIX}-auth-service"
 
 # AgentCore runtime name
 AGENTCORE_NAME="${PREFIX}_${STAGE}"
@@ -51,10 +55,16 @@ if [ -z "${ADMIN_PASSWORD:-}" ]; then
   fail "ADMIN_PASSWORD is required. Usage: ADMIN_EMAIL=you@example.com ADMIN_PASSWORD=YourPass123 ./scripts/deploy.sh"
 fi
 
+if [ "$DEPLOY_MODE" != "agentcore" ] && [ "$DEPLOY_MODE" != "ecs" ]; then
+  echo "ERROR: DEPLOY_MODE must be 'agentcore' or 'ecs', got '$DEPLOY_MODE'"
+  exit 1
+fi
+
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 log "  AWS Account: ${ACCOUNT_ID}"
 log "  Region:      ${REGION}"
 log "  Stage:       ${STAGE}"
+log "  Deploy mode: $DEPLOY_MODE"
 log "  Admin email: ${ADMIN_EMAIL}"
 
 # ── Step 2: Install & build ─────────────────────────────────────────────────
@@ -95,6 +105,15 @@ docker build --platform linux/arm64 \
   -f agent-runtime/Dockerfile .
 docker push "${ECR_URI}/${ECR_AGENT_REPO}:latest"
 
+# ── Step 5b: Build & push auth-service image (ECS mode only) ───────────────
+if [ "$DEPLOY_MODE" = "ecs" ]; then
+  log "Step 5b: Building auth-service image"
+  aws ecr describe-repositories --repository-names "$ECR_AUTH_REPO" --region "$REGION" 2>/dev/null || \
+    aws ecr create-repository --repository-name "$ECR_AUTH_REPO" --region "$REGION" --image-scanning-configuration scanOnPush=true
+  docker build --platform linux/arm64 -t "${ECR_URI}/${ECR_AUTH_REPO}:latest" -f auth-service/Dockerfile .
+  docker push "${ECR_URI}/${ECR_AUTH_REPO}:latest"
+fi
+
 # ── Step 6: CDK deploy ──────────────────────────────────────────────────────
 
 log "Step 6: CDK deploy all stacks"
@@ -105,6 +124,7 @@ cd "$REPO_ROOT/infra"
 CDK_DEFAULT_REGION="$REGION" CDK_DEFAULT_ACCOUNT="$ACCOUNT_ID" \
 npx cdk deploy --all --require-approval never \
   --context stage="$STAGE" \
+  --context mode="$DEPLOY_MODE" \
   --outputs-file cdk-outputs.json
 cd "$REPO_ROOT"
 
@@ -133,6 +153,9 @@ log "  Website Bucket:  ${WEBSITE_BUCKET}"
 log "  Agent Role ARN:  ${AGENT_BASE_ROLE_ARN}"
 
 # ── Step 8: Register AgentCore runtime ───────────────────────────────────────
+
+AGENTCORE_RUNTIME_ARN=""
+if [ "$DEPLOY_MODE" = "agentcore" ]; then
 
 log "Step 8: Register AgentCore runtime"
 
@@ -263,6 +286,8 @@ for sid in $(echo "$ACTIVE_SESSIONS" | jq -r '.[]'); do
 done
 log "  Stopped ${STOPPED} warm session(s)"
 
+fi  # end DEPLOY_MODE=agentcore (Steps 8, 9, 9b)
+
 # ── Step 10: Update ECS task with AGENTCORE_RUNTIME_ARN ──────────────────────
 
 log "Step 10: Updating ECS task environment with AgentCore runtime ARN"
@@ -327,11 +352,18 @@ fi
 log "Step 12: Build web-console"
 cd "$REPO_ROOT"
 
-# Write Cognito config for the web-console build
-export VITE_COGNITO_USER_POOL_ID="$COGNITO_USER_POOL_ID"
-export VITE_COGNITO_CLIENT_ID="$COGNITO_CLIENT_ID"
-export VITE_COGNITO_REGION="$REGION"
-export VITE_API_URL="https://${CDN_DOMAIN}"
+# Write auth config for the web-console build
+if [ "$DEPLOY_MODE" = "ecs" ]; then
+  export VITE_AUTH_MODE="oidc"
+  export VITE_AUTH_ENDPOINT="https://${CDN_DOMAIN}"
+  export VITE_API_URL="https://${CDN_DOMAIN}"
+else
+  export VITE_AUTH_MODE="cognito"
+  export VITE_COGNITO_USER_POOL_ID="$COGNITO_USER_POOL_ID"
+  export VITE_COGNITO_CLIENT_ID="$COGNITO_CLIENT_ID"
+  export VITE_COGNITO_REGION="$REGION"
+  export VITE_API_URL="https://${CDN_DOMAIN}"
+fi
 
 npm run build -w web-console
 
@@ -380,111 +412,130 @@ fi
 log "Step 16: Seed default admin account"
 USERS_TABLE="${PREFIX}-${STAGE}-users"
 
-# Check if admin already exists in Cognito
-EXISTING_ADMIN=$(aws cognito-idp admin-get-user \
-  --user-pool-id "$COGNITO_USER_POOL_ID" \
-  --username "$ADMIN_EMAIL" \
-  --region "$REGION" 2>/dev/null || echo "")
-
-# Ensure clawbot-admins group exists (idempotent)
-aws cognito-idp create-group \
-  --user-pool-id "$COGNITO_USER_POOL_ID" \
-  --group-name "clawbot-admins" \
-  --description "NanoClaw admin users" \
-  --region "$REGION" 2>/dev/null || true
-
-if [ -n "$EXISTING_ADMIN" ]; then
-  log "  Admin user already exists: ${ADMIN_EMAIL} — ensuring admin group membership"
-  aws cognito-idp admin-add-user-to-group \
-    --user-pool-id "$COGNITO_USER_POOL_ID" \
-    --username "$ADMIN_EMAIL" \
-    --group-name "clawbot-admins" \
-    --region "$REGION" 2>/dev/null || true
+if [ "$DEPLOY_MODE" = "ecs" ]; then
+  log "  Seeding admin via auth-service..."
+  AUTH_ENDPOINT=$(jq -r ".\"${STACK_PREFIX}-Auth\".AuthEndpoint // empty" "$CDK_OUTPUTS")
+  for i in $(seq 1 30); do
+    if curl -sf "${AUTH_ENDPOINT}/auth/health" >/dev/null 2>&1; then break; fi
+    echo "  Waiting for auth service... ($i/30)"
+    sleep 10
+  done
+  curl -sf -X POST "${AUTH_ENDPOINT}/admin/users" \
+    -H "Content-Type: application/json" \
+    -H "X-Bootstrap-Secret: ${ADMIN_BOOTSTRAP_SECRET:-bootstrap}" \
+    -d "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\",\"plan\":\"enterprise\",\"isAdmin\":true}" || echo "  Admin may already exist"
 else
-  log "  Creating admin user: ${ADMIN_EMAIL}"
-
-  # Create user in Cognito (suppress welcome email with MessageAction)
-  CREATE_ADMIN_RESULT=$(aws cognito-idp admin-create-user \
+  # Cognito admin seeding (agentcore mode)
+  # Check if admin already exists in Cognito
+  EXISTING_ADMIN=$(aws cognito-idp admin-get-user \
     --user-pool-id "$COGNITO_USER_POOL_ID" \
     --username "$ADMIN_EMAIL" \
-    --user-attributes Name=email,Value="$ADMIN_EMAIL" Name=email_verified,Value=true \
-    --message-action SUPPRESS \
-    --region "$REGION" 2>&1) || fail "Failed to create admin user: $CREATE_ADMIN_RESULT"
+    --region "$REGION" 2>/dev/null || echo "")
 
-  # Extract the Cognito sub (userId)
-  ADMIN_USER_ID=$(echo "$CREATE_ADMIN_RESULT" | jq -r '.User.Attributes[] | select(.Name=="sub") | .Value')
-  if [ -z "$ADMIN_USER_ID" ]; then
-    fail "Failed to extract user ID from Cognito response"
-  fi
-
-  # Set permanent password (skips FORCE_CHANGE_PASSWORD state)
-  aws cognito-idp admin-set-user-password \
+  # Ensure clawbot-admins group exists (idempotent)
+  aws cognito-idp create-group \
     --user-pool-id "$COGNITO_USER_POOL_ID" \
-    --username "$ADMIN_EMAIL" \
-    --password "$ADMIN_PASSWORD" \
-    --permanent \
-    --region "$REGION" || fail "Failed to set admin password"
-
-  # Create matching DynamoDB user record
-  NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
-  USAGE_MONTH=$(date -u +%Y-%m)
-  aws dynamodb put-item \
-    --table-name "$USERS_TABLE" \
-    --region "$REGION" \
-    --condition-expression "attribute_not_exists(userId)" \
-    --item "$(jq -n \
-      --arg uid "$ADMIN_USER_ID" \
-      --arg email "$ADMIN_EMAIL" \
-      --arg now "$NOW" \
-      --arg month "$USAGE_MONTH" \
-      '{
-        userId:           {S: $uid},
-        email:            {S: $email},
-        displayName:      {S: "admin"},
-        plan:             {S: "enterprise"},
-        status:           {S: "active"},
-        quota:            {M: {maxBots: {N: "50"}, maxGroupsPerBot: {N: "100"}, maxTasksPerBot: {N: "200"}, maxConcurrentAgents: {N: "20"}, maxMonthlyTokens: {N: "1000000000"}}},
-        usageMonth:       {S: $month},
-        usageTokens:      {N: "0"},
-        usageInvocations: {N: "0"},
-        activeAgents:     {N: "0"},
-        createdAt:        {S: $now},
-        lastLogin:        {S: $now}
-      }')" 2>/dev/null || log "  WARN: DynamoDB record may already exist"
-
-  # Add admin to clawbot-admins group
-  aws cognito-idp admin-add-user-to-group \
-    --user-pool-id "$COGNITO_USER_POOL_ID" \
-    --username "$ADMIN_EMAIL" \
     --group-name "clawbot-admins" \
-    --region "$REGION" || log "  WARN: Failed to add admin to group"
+    --description "NanoClaw admin users" \
+    --region "$REGION" 2>/dev/null || true
 
-  log "  Admin user created: ${ADMIN_EMAIL} (userId: ${ADMIN_USER_ID})"
+  if [ -n "$EXISTING_ADMIN" ]; then
+    log "  Admin user already exists: ${ADMIN_EMAIL} — ensuring admin group membership"
+    aws cognito-idp admin-add-user-to-group \
+      --user-pool-id "$COGNITO_USER_POOL_ID" \
+      --username "$ADMIN_EMAIL" \
+      --group-name "clawbot-admins" \
+      --region "$REGION" 2>/dev/null || true
+  else
+    log "  Creating admin user: ${ADMIN_EMAIL}"
+
+    # Create user in Cognito (suppress welcome email with MessageAction)
+    CREATE_ADMIN_RESULT=$(aws cognito-idp admin-create-user \
+      --user-pool-id "$COGNITO_USER_POOL_ID" \
+      --username "$ADMIN_EMAIL" \
+      --user-attributes Name=email,Value="$ADMIN_EMAIL" Name=email_verified,Value=true \
+      --message-action SUPPRESS \
+      --region "$REGION" 2>&1) || fail "Failed to create admin user: $CREATE_ADMIN_RESULT"
+
+    # Extract the Cognito sub (userId)
+    ADMIN_USER_ID=$(echo "$CREATE_ADMIN_RESULT" | jq -r '.User.Attributes[] | select(.Name=="sub") | .Value')
+    if [ -z "$ADMIN_USER_ID" ]; then
+      fail "Failed to extract user ID from Cognito response"
+    fi
+
+    # Set permanent password (skips FORCE_CHANGE_PASSWORD state)
+    aws cognito-idp admin-set-user-password \
+      --user-pool-id "$COGNITO_USER_POOL_ID" \
+      --username "$ADMIN_EMAIL" \
+      --password "$ADMIN_PASSWORD" \
+      --permanent \
+      --region "$REGION" || fail "Failed to set admin password"
+
+    # Create matching DynamoDB user record
+    NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+    USAGE_MONTH=$(date -u +%Y-%m)
+    aws dynamodb put-item \
+      --table-name "$USERS_TABLE" \
+      --region "$REGION" \
+      --condition-expression "attribute_not_exists(userId)" \
+      --item "$(jq -n \
+        --arg uid "$ADMIN_USER_ID" \
+        --arg email "$ADMIN_EMAIL" \
+        --arg now "$NOW" \
+        --arg month "$USAGE_MONTH" \
+        '{
+          userId:           {S: $uid},
+          email:            {S: $email},
+          displayName:      {S: "admin"},
+          plan:             {S: "enterprise"},
+          status:           {S: "active"},
+          quota:            {M: {maxBots: {N: "50"}, maxGroupsPerBot: {N: "100"}, maxTasksPerBot: {N: "200"}, maxConcurrentAgents: {N: "20"}, maxMonthlyTokens: {N: "1000000000"}}},
+          usageMonth:       {S: $month},
+          usageTokens:      {N: "0"},
+          usageInvocations: {N: "0"},
+          activeAgents:     {N: "0"},
+          createdAt:        {S: $now},
+          lastLogin:        {S: $now}
+        }')" 2>/dev/null || log "  WARN: DynamoDB record may already exist"
+
+    # Add admin to clawbot-admins group
+    aws cognito-idp admin-add-user-to-group \
+      --user-pool-id "$COGNITO_USER_POOL_ID" \
+      --username "$ADMIN_EMAIL" \
+      --group-name "clawbot-admins" \
+      --region "$REGION" || log "  WARN: Failed to add admin to group"
+
+    log "  Admin user created: ${ADMIN_EMAIL} (userId: ${ADMIN_USER_ID})"
+  fi
 fi
 
 # ── Step 17: Write runtime values to SSM (post-deploy) ──────────────────────
 
-log "Step 17: Write runtime values to SSM Parameter Store"
-SSM_PREFIX="/${PREFIX}/${STAGE}"
+if [ "$DEPLOY_MODE" = "agentcore" ]; then
+  log "Step 17: Write runtime values to SSM Parameter Store"
+  SSM_PREFIX="/${PREFIX}/${STAGE}"
 
-aws ssm put-parameter \
-  --name "${SSM_PREFIX}/agentcore-runtime-arn" \
-  --value "$AGENTCORE_RUNTIME_ARN" \
-  --type String \
-  --description "AgentCore runtime ARN for ${STAGE} environment" \
-  --overwrite \
-  --region "$REGION" >/dev/null
+  aws ssm put-parameter \
+    --name "${SSM_PREFIX}/agentcore-runtime-arn" \
+    --value "$AGENTCORE_RUNTIME_ARN" \
+    --type String \
+    --description "AgentCore runtime ARN for ${STAGE} environment" \
+    --overwrite \
+    --region "$REGION" >/dev/null
 
-# Verify
-SSM_VERIFY=$(aws ssm get-parameter \
-  --name "${SSM_PREFIX}/agentcore-runtime-arn" \
-  --region "$REGION" \
-  --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+  # Verify
+  SSM_VERIFY=$(aws ssm get-parameter \
+    --name "${SSM_PREFIX}/agentcore-runtime-arn" \
+    --region "$REGION" \
+    --query 'Parameter.Value' --output text 2>/dev/null || echo "")
 
-if [ "$SSM_VERIFY" = "$AGENTCORE_RUNTIME_ARN" ]; then
-  log "  SSM ${SSM_PREFIX}/agentcore-runtime-arn verified"
+  if [ "$SSM_VERIFY" = "$AGENTCORE_RUNTIME_ARN" ]; then
+    log "  SSM ${SSM_PREFIX}/agentcore-runtime-arn verified"
+  else
+    log "  WARN: SSM verification failed — expected ${AGENTCORE_RUNTIME_ARN}, got ${SSM_VERIFY}"
+  fi
 else
-  log "  WARN: SSM verification failed — expected ${AGENTCORE_RUNTIME_ARN}, got ${SSM_VERIFY}"
+  log "Step 17: Skipped (SSM AgentCore ARN not needed in ECS mode)"
 fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────
@@ -492,10 +543,13 @@ fi
 log ""
 log "Deployment complete!"
 log "  Stage:        ${STAGE}"
+log "  Deploy mode:  ${DEPLOY_MODE}"
 log "  Console:      https://${CDN_DOMAIN}"
 log "  API:          https://${CDN_DOMAIN}/api"
 log "  Health:       https://${CDN_DOMAIN}/health"
-log "  AgentCore:    ${AGENTCORE_RUNTIME_ARN}"
+if [ "$DEPLOY_MODE" = "agentcore" ]; then
+  log "  AgentCore:    ${AGENTCORE_RUNTIME_ARN}"
+fi
 log ""
 log "  ┌─ Admin Credentials ────────────────────┐"
 log "  │  Email:    ${ADMIN_EMAIL}"
