@@ -157,6 +157,11 @@ app.post('/auth/change-password', async (request, reply) => {
   const body = request.body as Record<string, unknown>;
 
   if (body.userId && body.newPassword) {
+    // Force-change flow: verify user actually has forcePasswordChange flag
+    const currentUser = await getUserById(claims.sub);
+    if (!currentUser?.forcePasswordChange) {
+      return reply.status(400).send({ error: 'Password change not required. Use currentPassword flow.' });
+    }
     const { newPassword } = z.object({ userId: z.string(), newPassword: z.string().min(8) }).parse(body);
     const hash = await hashPassword(newPassword);
 

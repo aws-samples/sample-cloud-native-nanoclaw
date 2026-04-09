@@ -89,9 +89,9 @@ export class AuthStack extends cdk.Stack {
       );
       taskRole.addToPrincipalPolicy(
         new iam.PolicyStatement({
-          sid: 'SecretsManagerRead',
+          sid: 'SecretsManagerAccess',
           effect: iam.Effect.ALLOW,
-          actions: ['secretsmanager:GetSecretValue'],
+          actions: ['secretsmanager:GetSecretValue', 'secretsmanager:CreateSecret', 'secretsmanager:PutSecretValue'],
           resources: [
             `arn:aws:secretsmanager:${this.region}:${this.account}:secret:nanoclawbot/${stage}/*`,
           ],

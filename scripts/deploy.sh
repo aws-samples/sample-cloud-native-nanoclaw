@@ -288,8 +288,9 @@ log "  Stopped ${STOPPED} warm session(s)"
 
 fi  # end DEPLOY_MODE=agentcore (Steps 8, 9, 9b)
 
-# ── Step 10: Update ECS task with AGENTCORE_RUNTIME_ARN ──────────────────────
+# ── Step 10: Update ECS task with AGENTCORE_RUNTIME_ARN (agentcore mode only)
 
+if [ "$DEPLOY_MODE" = "agentcore" ]; then
 log "Step 10: Updating ECS task environment with AgentCore runtime ARN"
 ECS_CLUSTER="${PREFIX}-${STAGE}"
 NEW_TASK_DEF_ARN=""
@@ -346,6 +347,8 @@ if [ -n "$ECS_SERVICE" ] && [ "$ECS_SERVICE" != "None" ]; then
 else
   log "  WARN: Skipping — no ECS service found"
 fi
+
+fi  # end DEPLOY_MODE=agentcore (Steps 10-11)
 
 # ── Step 12: Build web-console with Cognito config ───────────────────────────
 

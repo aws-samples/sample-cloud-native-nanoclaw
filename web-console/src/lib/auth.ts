@@ -22,10 +22,19 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-// ── Token storage (OIDC mode) ─────────────────────────────────────────
+// ── Token storage (OIDC mode) — persisted to localStorage ─────────────
 
-let oidcAccessToken = '';
-let oidcRefreshToken = '';
+let oidcAccessToken = localStorage.getItem('clawbot_access_token') || '';
+let oidcRefreshToken = localStorage.getItem('clawbot_refresh_token') || '';
+
+function persistTokens(access: string, refresh: string) {
+  oidcAccessToken = access;
+  oidcRefreshToken = refresh;
+  if (access) localStorage.setItem('clawbot_access_token', access);
+  else localStorage.removeItem('clawbot_access_token');
+  if (refresh) localStorage.setItem('clawbot_refresh_token', refresh);
+  else localStorage.removeItem('clawbot_refresh_token');
+}
 
 // ── Cognito (Amplify) helpers ─────────────────────────────────────────
 
@@ -116,8 +125,7 @@ async function oidcLogin(email: string, password: string): Promise<{ needsNewPas
   if (data.challengeName === 'NEW_PASSWORD_REQUIRED') {
     return { needsNewPassword: true, user: null };
   }
-  oidcAccessToken = data.accessToken;
-  oidcRefreshToken = data.refreshToken;
+  persistTokens(data.accessToken, data.refreshToken);
   const user = await oidcCheckUser();
   return { needsNewPassword: false, user };
 }
@@ -130,14 +138,12 @@ async function oidcCompleteNewPassword(newPassword: string): Promise<AuthUser | 
   });
   if (!res.ok) throw new Error('Password change failed');
   const data = await res.json();
-  oidcAccessToken = data.accessToken;
-  oidcRefreshToken = data.refreshToken;
+  persistTokens(data.accessToken, data.refreshToken);
   return oidcCheckUser();
 }
 
 async function oidcLogout(): Promise<void> {
-  oidcAccessToken = '';
-  oidcRefreshToken = '';
+  persistTokens('', '');
 }
 
 async function oidcRefresh(): Promise<boolean> {
@@ -150,8 +156,7 @@ async function oidcRefresh(): Promise<boolean> {
     });
     if (!res.ok) return false;
     const data = await res.json();
-    oidcAccessToken = data.accessToken;
-    oidcRefreshToken = data.refreshToken;
+    persistTokens(data.accessToken, data.refreshToken);
     return true;
   } catch {
     return false;
