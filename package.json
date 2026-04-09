@@ -9,7 +9,8 @@
     "infra",
     "control-plane",
     "agent-runtime",
-    "web-console"
+    "web-console",
+    "auth-service"
   ],
   "overrides": {
     "vite": "^6.1.0"
