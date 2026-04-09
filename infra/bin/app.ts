@@ -10,6 +10,7 @@ import { MonitoringStack } from '../lib/monitoring-stack.js';
 const app = new cdk.App();
 
 const stage = process.env.CDK_STAGE ?? 'dev';
+const mode = (app.node.tryGetContext('mode') ?? 'agentcore') as 'agentcore' | 'ecs';
 
 const env: cdk.Environment = {
   account: process.env.CDK_DEFAULT_ACCOUNT,
@@ -24,12 +25,18 @@ const foundation = new FoundationStack(app, `NanoClawBot-${stage}-Foundation`, {
 const auth = new AuthStack(app, `NanoClawBot-${stage}-Auth`, {
   env,
   stage,
+  mode,
+  vpc: foundation.vpc,
+  ecrRepo: foundation.ecrRepo,
 });
-auth.addDependency(foundation);
+if (mode === 'ecs') {
+  auth.addDependency(foundation);
+}
 
 const agent = new AgentStack(app, `NanoClawBot-${stage}-Agent`, {
   env,
   stage,
+  mode,
   dataBucket: foundation.dataBucket,
   messageQueue: foundation.messageQueue,
   replyQueue: foundation.replyQueue,
@@ -42,12 +49,15 @@ const agent = new AgentStack(app, `NanoClawBot-${stage}-Agent`, {
     tasks: foundation.tasksTable,
     sessions: foundation.sessionsTable,
   },
+  vpc: foundation.vpc,
+  ecrRepo: foundation.ecrRepo,
 });
 agent.addDependency(foundation);
 
 const controlPlane = new ControlPlaneStack(app, `NanoClawBot-${stage}-ControlPlane`, {
   env,
   stage,
+  mode,
   vpc: foundation.vpc,
   dataBucket: foundation.dataBucket,
   ecrRepo: foundation.ecrRepo,
@@ -72,6 +82,9 @@ const controlPlane = new ControlPlaneStack(app, `NanoClawBot-${stage}-ControlPla
   agentBaseRole: agent.agentBaseRole,
   schedulerRoleArn: agent.schedulerRole.roleArn,
   messageQueueArn: foundation.messageQueue.queueArn,
+  authEndpoint: auth.authEndpoint,
+  authJwksUrl: auth.authJwksUrl,
+  agentEndpoint: agent.agentEndpoint,
 });
 controlPlane.addDependency(foundation);
 controlPlane.addDependency(auth);
@@ -80,8 +93,7 @@ controlPlane.addDependency(agent);
 const frontend = new FrontendStack(app, `NanoClawBot-${stage}-Frontend`, {
   env,
   stage,
-  userPool: auth.userPool,
-  userPoolClient: auth.userPoolClient,
+  mode,
   alb: controlPlane.alb,
   originVerifySecret: controlPlane.originVerifySecret,
 });

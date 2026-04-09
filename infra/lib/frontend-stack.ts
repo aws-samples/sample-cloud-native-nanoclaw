@@ -3,14 +3,12 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
-import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import type { Construct } from 'constructs';
 
 export interface FrontendStackProps extends cdk.StackProps {
   stage: string;
-  userPool: cognito.IUserPool;
-  userPoolClient: cognito.IUserPoolClient;
+  mode: 'agentcore' | 'ecs';
   alb: elbv2.IApplicationLoadBalancer;
   /** Shared secret for X-Origin-Verify header between CloudFront and ALB */
   originVerifySecret: string;
