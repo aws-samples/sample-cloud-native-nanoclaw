@@ -579,58 +579,98 @@ async function resolveMcpConfigs(bot: Bot): Promise<ResolvedMcpConfig[]> {
   return resolved;
 }
 
-// ── Agent Invocation (AgentCore Runtime via AWS SDK) ─────────────────────────
+// ── Agent Invocation ──────────────────────────────────────────────────────
 
-const agentcoreClient = new BedrockAgentCoreClient({ region: config.region });
+interface AgentInvoker {
+  invoke(payload: InvocationPayload, logger: Logger): Promise<InvocationResult>;
+}
+
+class AgentCoreInvoker implements AgentInvoker {
+  private client = new BedrockAgentCoreClient({ region: config.region });
+
+  async invoke(payload: InvocationPayload, logger: Logger): Promise<InvocationResult> {
+    const runtimeArn = config.agentcore.runtimeArn;
+    if (!runtimeArn) {
+      logger.error('AgentCore runtime ARN is not configured (AGENTCORE_RUNTIME_ARN)');
+      return { status: 'error', result: null, error: 'AgentCore runtime ARN is not configured' };
+    }
+
+    logger.info(
+      { botId: payload.botId, groupJid: payload.groupJid, promptLength: payload.prompt.length, isScheduledTask: payload.isScheduledTask },
+      'Invoking AgentCore runtime',
+    );
+
+    try {
+      const response = await this.client.send(
+        new InvokeAgentRuntimeCommand({
+          agentRuntimeArn: runtimeArn,
+          payload: Buffer.from(JSON.stringify(payload)),
+          contentType: 'application/json',
+          accept: 'application/json',
+          runtimeSessionId: `${payload.botId}---${payload.groupJid}`,
+        }),
+      );
+
+      const resultText = (await response.response?.transformToString()) || '{}';
+      const body = JSON.parse(resultText) as InvocationResult & { output?: InvocationResult };
+      return body.output ?? body;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err }, 'AgentCore runtime invocation failed');
+      return { status: 'error', result: null, error: `AgentCore invocation failed: ${message}` };
+    }
+  }
+}
+
+class EcsHttpInvoker implements AgentInvoker {
+  async invoke(payload: InvocationPayload, logger: Logger): Promise<InvocationResult> {
+    const endpoint = config.agentEndpoint;
+    if (!endpoint) {
+      logger.error('Agent endpoint is not configured (AGENT_ENDPOINT)');
+      return { status: 'error', result: null, error: 'Agent endpoint is not configured' };
+    }
+
+    logger.info(
+      { botId: payload.botId, groupJid: payload.groupJid, promptLength: payload.prompt.length, isScheduledTask: payload.isScheduledTask },
+      'Invoking ECS agent runtime',
+    );
+
+    try {
+      const url = `${endpoint}/invocations`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(30_000),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        logger.error({ status: res.status, body: text }, 'ECS agent invocation returned error');
+        return { status: 'error', result: null, error: `ECS agent returned ${res.status}: ${text}` };
+      }
+
+      return { status: 'accepted', result: null };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err }, 'ECS agent runtime invocation failed');
+      return { status: 'error', result: null, error: `ECS agent invocation failed: ${message}` };
+    }
+  }
+}
+
+function createInvoker(): AgentInvoker {
+  if (config.agentMode === 'ecs') return new EcsHttpInvoker();
+  return new AgentCoreInvoker();
+}
+
+const agentInvoker = createInvoker();
 
 export async function invokeAgent(
   payload: InvocationPayload,
   logger: Logger,
 ): Promise<InvocationResult> {
-  const runtimeArn = config.agentcore.runtimeArn;
-  if (!runtimeArn) {
-    logger.error('AgentCore runtime ARN is not configured (AGENTCORE_RUNTIME_ARN)');
-    return {
-      status: 'error',
-      result: null,
-      error: 'AgentCore runtime ARN is not configured',
-    };
-  }
-
-  logger.info(
-    {
-      botId: payload.botId,
-      groupJid: payload.groupJid,
-      promptLength: payload.prompt.length,
-      isScheduledTask: payload.isScheduledTask,
-    },
-    'Invoking AgentCore runtime',
-  );
-
-  try {
-    const response = await agentcoreClient.send(
-      new InvokeAgentRuntimeCommand({
-        agentRuntimeArn: runtimeArn,
-        payload: Buffer.from(JSON.stringify(payload)),
-        contentType: 'application/json',
-        accept: 'application/json',
-        runtimeSessionId: `${payload.botId}---${payload.groupJid}`,
-      }),
-    );
-
-    const resultText = (await response.response?.transformToString()) || '{}';
-    const body = JSON.parse(resultText) as InvocationResult & { output?: InvocationResult };
-    // Support both formats: {output: InvocationResult} and direct InvocationResult
-    return body.output ?? body;
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    logger.error({ err }, 'AgentCore runtime invocation failed');
-    return {
-      status: 'error',
-      result: null,
-      error: `AgentCore invocation failed: ${message}`,
-    };
-  }
+  return agentInvoker.invoke(payload, logger);
 }
 
 // ── Channel reply routing (via Adapter Registry) ────────────────────────────
