@@ -1,6 +1,6 @@
 // auth-service/src/jwt.ts — RS256 JWT signing, verification, and JWKS endpoint
 
-import { importPKCS8, importSPKI, exportJWK, SignJWT, jwtVerify } from 'jose';
+import { importPKCS8, importSPKI, exportJWK, SignJWT, jwtVerify, type KeyLike } from 'jose';
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
@@ -12,8 +12,8 @@ import crypto from 'node:crypto';
 const ALG = 'RS256';
 const KEY_ID = 'auth-key-1';
 
-let privateKey: crypto.KeyObject | CryptoKey;
-let publicKey: crypto.KeyObject | CryptoKey;
+let privateKey: KeyLike;
+let publicKey: KeyLike;
 let jwksResponse: object;
 
 export async function initKeys(region: string, stage: string): Promise<void> {
