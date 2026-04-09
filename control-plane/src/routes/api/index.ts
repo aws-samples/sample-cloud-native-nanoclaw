@@ -1,9 +1,11 @@
 // ClawBot Cloud — API Route Registry
-// Registers all REST API routes under /api with Cognito JWT auth middleware
+// Registers all REST API routes under /api with JWT auth middleware
+// Supports Cognito (agentcore mode) and generic JWKS (ecs mode)
 
 import type { FastifyPluginAsync } from 'fastify';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 import type { CognitoJwtVerifierSingleUserPool } from 'aws-jwt-verify/cognito-verifier';
+import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { config } from '../../config.js';
 import { getUser } from '../../services/dynamo.js';
 import { botsRoutes } from './bots.js';
@@ -28,25 +30,76 @@ declare module 'fastify' {
   }
 }
 
+// ── JWT Verifier abstraction ─────────────────────────────────────────────
+
+interface JwtClaims {
+  sub: string;
+  email: string;
+  groups: string[];
+}
+
+interface JwtVerifierAdapter {
+  verify(token: string): Promise<JwtClaims>;
+}
+
 type SinglePoolVerifier = CognitoJwtVerifierSingleUserPool<{
   userPoolId: string;
   tokenUse: 'access';
   clientId: string;
 }>;
 
-export const apiRoutes: FastifyPluginAsync = async (app) => {
-  // Set up Cognito JWT verification — required for all environments
-  if (!config.cognito.userPoolId || !config.cognito.clientId) {
-    app.log.warn('Cognito not configured (COGNITO_USER_POOL_ID / COGNITO_CLIENT_ID missing) — all API requests will return 503');
+class CognitoVerifierAdapter implements JwtVerifierAdapter {
+  private verifier: SinglePoolVerifier;
+  constructor(userPoolId: string, clientId: string) {
+    this.verifier = CognitoJwtVerifier.create({
+      userPoolId,
+      tokenUse: 'access',
+      clientId,
+    });
   }
-  const verifier: SinglePoolVerifier | null =
-    config.cognito.userPoolId && config.cognito.clientId
-      ? CognitoJwtVerifier.create({
-          userPoolId: config.cognito.userPoolId,
-          tokenUse: 'access',
-          clientId: config.cognito.clientId,
-        })
-      : null;
+  async verify(token: string): Promise<JwtClaims> {
+    const payload = await this.verifier.verify(token);
+    return {
+      sub: payload.sub,
+      email: (payload as Record<string, unknown>).email as string || '',
+      groups: ((payload as Record<string, unknown>)['cognito:groups'] as string[]) || [],
+    };
+  }
+}
+
+class JwksVerifierAdapter implements JwtVerifierAdapter {
+  private jwks: ReturnType<typeof createRemoteJWKSet>;
+  constructor(jwksUrl: string) {
+    this.jwks = createRemoteJWKSet(new URL(jwksUrl));
+  }
+  async verify(token: string): Promise<JwtClaims> {
+    const { payload } = await jwtVerify(token, this.jwks);
+    return {
+      sub: payload.sub!,
+      email: (payload as Record<string, unknown>).email as string || '',
+      groups: ((payload as Record<string, unknown>)['cognito:groups'] as string[]) || [],
+    };
+  }
+}
+
+function createVerifier(): JwtVerifierAdapter | null {
+  if (config.agentMode === 'ecs') {
+    if (!config.auth.jwksUrl) return null;
+    return new JwksVerifierAdapter(config.auth.jwksUrl);
+  }
+  if (!config.cognito.userPoolId || !config.cognito.clientId) return null;
+  return new CognitoVerifierAdapter(config.cognito.userPoolId, config.cognito.clientId);
+}
+
+// ── Route Plugin ─────────────────────────────────────────────────────────
+
+export const apiRoutes: FastifyPluginAsync = async (app) => {
+  const verifier = createVerifier();
+
+  if (!verifier) {
+    const mode = config.agentMode;
+    app.log.warn(`JWT verifier not configured for mode=${mode} — all API requests will return 503`);
+  }
 
   // Auth middleware — verify JWT and extract user info
   app.addHook('onRequest', async (request, reply) => {
@@ -62,11 +115,10 @@ export const apiRoutes: FastifyPluginAsync = async (app) => {
     const token = authHeader.substring(7);
 
     try {
-      const payload = await verifier.verify(token);
-      request.userId = payload.sub;
-      request.userEmail = (payload as Record<string, unknown>).email as string || '';
-      const groups = ((payload as Record<string, unknown>)['cognito:groups'] as string[]) || [];
-      request.isAdmin = groups.includes('clawbot-admins');
+      const claims = await verifier.verify(token);
+      request.userId = claims.sub;
+      request.userEmail = claims.email;
+      request.isAdmin = claims.groups.includes('clawbot-admins');
     } catch (err) {
       request.log.warn({ err }, 'JWT verification failed');
       return reply.status(401).send({ error: 'Invalid or expired token' });
