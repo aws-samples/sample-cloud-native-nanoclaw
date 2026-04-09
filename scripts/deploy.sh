@@ -77,7 +77,12 @@ npm run build --workspaces
 # ── Step 3: ECR login ───────────────────────────────────────────────────────
 
 log "Step 3: ECR login"
-ECR_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+# China regions (cn-*) use .amazonaws.com.cn domain
+if [[ "$REGION" == cn-* ]]; then
+  ECR_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com.cn"
+else
+  ECR_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+fi
 aws ecr get-login-password --region "$REGION" | \
   docker login --username AWS --password-stdin "$ECR_URI"
 
