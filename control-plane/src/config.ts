@@ -48,6 +48,18 @@ export const config = {
     region: process.env.COGNITO_REGION || process.env.AWS_REGION || 'us-east-1',
   },
 
+  // Deployment mode — 'agentcore' (default) or 'ecs' (China / self-hosted)
+  agentMode: (process.env.AGENT_MODE || 'agentcore') as 'agentcore' | 'ecs',
+
+  // Self-hosted auth (ECS mode only)
+  auth: {
+    jwksUrl: process.env.AUTH_JWKS_URL || '',
+    endpoint: process.env.AUTH_ENDPOINT || '',
+  },
+
+  // Agent endpoint (ECS mode only — internal ALB for agent-runtime service)
+  agentEndpoint: process.env.AGENT_ENDPOINT || '',
+
   // CORS
   corsOrigin: process.env.CORS_ORIGIN || '*',
 
@@ -106,9 +118,11 @@ export async function resolveConfig(): Promise<void> {
     webhookBaseUrlSsm,
     'webhook base URL',
   );
-  agentcoreRuntimeArn = await resolve(
-    agentcoreRuntimeArn,
-    agentcoreRuntimeArnSsm,
-    'AgentCore runtime ARN',
-  );
+  if (config.agentMode === 'agentcore') {
+    agentcoreRuntimeArn = await resolve(
+      agentcoreRuntimeArn,
+      agentcoreRuntimeArnSsm,
+      'AgentCore runtime ARN',
+    );
+  }
 }
