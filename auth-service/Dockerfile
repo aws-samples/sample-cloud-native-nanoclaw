@@ -1,4 +1,4 @@
-FROM public.ecr.aws/docker/library/node:20-slim AS builder
+FROM --platform=linux/arm64 node:22-slim AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY shared/package.json shared/
@@ -8,7 +8,7 @@ COPY shared/ shared/
 COPY auth-service/ auth-service/
 RUN npm run build -w shared && npm run build -w auth-service
 
-FROM public.ecr.aws/docker/library/node:20-slim
+FROM --platform=linux/arm64 node:22-slim
 RUN apt-get update && apt-get install -y --no-install-recommends dumb-init && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
