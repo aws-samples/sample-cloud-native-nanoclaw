@@ -206,12 +206,21 @@ DEPLOY_MODE=ecs ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD=SecurePass123! \
 # - Anthropic API (replaces Bedrock) — requires per-user API keys
 ```
 
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DEPLOY_MODE` | No | `agentcore` | Deployment mode: `agentcore` (default) or `ecs` (China regions) |
+| `ADMIN_EMAIL` | Yes | — | Email for the initial admin account |
+| `ADMIN_PASSWORD` | Yes | — | Password for the initial admin account |
+| `ADMIN_BOOTSTRAP_SECRET` | ECS only | `bootstrap` | One-time secret for creating the first admin user via auth-service API. In ECS mode there is no Cognito CLI — the deploy script calls `POST /admin/users` with this secret in the `X-Bootstrap-Secret` header to bypass JWT auth before any admin exists. Can be removed from the auth-service environment after the first deploy. |
+| `CDK_STAGE` | No | `dev` | Deployment stage name |
+| `AWS_REGION` | No | `us-west-2` | Target AWS region |
+
 The `DEPLOY_MODE=ecs` flag:
 - Builds and pushes an additional auth-service Docker image
 - Passes `--context mode=ecs` to CDK (creates auth ECS service + agent ECS service instead of Cognito + AgentCore)
 - Skips AgentCore registration steps (8, 9, 9b, 10, 11)
 - Configures web-console for OIDC auth instead of Cognito
-- Seeds admin via auth-service API instead of Cognito
+- Seeds admin via auth-service API (using `ADMIN_BOOTSTRAP_SECRET`) instead of Cognito
 
 The deploy script runs 17 steps in order:
 1. Pre-flight checks (aws, docker, node, jq)
