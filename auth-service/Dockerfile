@@ -1,6 +1,6 @@
 FROM --platform=linux/arm64 node:22-slim AS builder
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json tsconfig.base.json ./
 COPY shared/package.json shared/
 COPY auth-service/package.json auth-service/
 RUN npm ci --workspace=shared --workspace=auth-service
