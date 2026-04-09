@@ -83,6 +83,8 @@ Auth: Cognito User Pool (JWT)
 Security: WAF │ ABAC via STS SessionTags │ Per-tenant S3/DynamoDB isolation
 ```
 
+> **Deployment modes:** The diagram above shows the default `agentcore` mode. In `ecs` mode (for AWS China regions), AgentCore is replaced by an ECS Fargate agent service, Cognito is replaced by a self-hosted OIDC auth service, and Bedrock is replaced by Anthropic API. See [ECS Mode](#ecs-mode-china-regions) below.
+
 ```mermaid
 graph TB
     Users["👤 用户终端<br/>飞书/ Discord / Slack "]
@@ -139,6 +141,7 @@ graph TB
 | `control-plane/` | Fastify HTTP server + SQS consumers (runs on ECS Fargate) |
 | `agent-runtime/` | Claude Agent SDK wrapper (runs in AgentCore microVMs) |
 | `web-console/` | React SPA — bot management, channel config, message history, tasks |
+| `auth-service/` | Self-hosted OIDC auth service (JWT + DynamoDB user store, ECS mode only) |
 
 ## Key Decisions
 
@@ -147,11 +150,11 @@ graph TB
 | Tenant model | One user, many Bots | Per-scenario isolation |
 | Channel credentials | BYOK (Bring Your Own Key) | User controls their bots |
 | Control plane | ECS Fargate (always-on) | No 15-min Lambda timeout |
-| Agent runtime | AgentCore (microVM) | Serverless, per-session isolation |
-| Agent SDK | Claude Agent SDK + Bedrock | Full tool access, IAM-native auth |
+| Agent runtime | AgentCore (microVM) / ECS Fargate (China) | Per-session isolation (global) / shared service with ABAC (China) |
+| Agent SDK | Claude Agent SDK + Bedrock / Anthropic API | Configurable via AGENT_MODE |
 | Message queue | SQS FIFO | Per-group ordering, cross-group parallelism |
 | Database | DynamoDB | Serverless, millisecond latency |
-| Auth | Cognito | Managed JWT, admin-provisioned users |
+| Auth | Cognito / Self-hosted OIDC | Cognito globally, self-hosted JWT for China |
 | IaC | CDK (TypeScript) | Type-safe, same language as app |
 
 ## NanoClaw → Cloud Mapping
@@ -188,6 +191,28 @@ CDK_STAGE=prod AWS_REGION=us-east-1 ADMIN_EMAIL=admin@company.com ADMIN_PASSWORD
 
 > `ADMIN_EMAIL` and `ADMIN_PASSWORD` are **required** — the script will abort if not set.
 
+### ECS Mode (China Regions)
+
+For deployment in AWS China regions (cn-north-1, cn-northwest-1) where Cognito, Bedrock, and AgentCore are unavailable:
+
+```bash
+# ECS mode deployment
+DEPLOY_MODE=ecs ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD=SecurePass123! \
+  ADMIN_BOOTSTRAP_SECRET=your-secret ./scripts/deploy.sh
+
+# ECS mode uses:
+# - Self-hosted OIDC auth service (replaces Cognito)
+# - ECS Fargate agent service (replaces AgentCore microVMs)
+# - Anthropic API (replaces Bedrock) — requires per-user API keys
+```
+
+The `DEPLOY_MODE=ecs` flag:
+- Builds and pushes an additional auth-service Docker image
+- Passes `--context mode=ecs` to CDK (creates auth ECS service + agent ECS service instead of Cognito + AgentCore)
+- Skips AgentCore registration steps (8, 9, 9b, 10, 11)
+- Configures web-console for OIDC auth instead of Cognito
+- Seeds admin via auth-service API instead of Cognito
+
 The deploy script runs 17 steps in order:
 1. Pre-flight checks (aws, docker, node, jq)
 2. `npm install` + build all workspaces
@@ -206,6 +231,8 @@ The deploy script runs 17 steps in order:
 15. Smoke test (`/health` endpoint)
 16. Seed default admin account (idempotent — skips if already exists)
 17. Write AgentCore runtime ARN to SSM Parameter Store
+
+> Steps 5b, 8-11, 16-17 behave differently in ECS mode. See `DEPLOY_MODE=ecs` above.
 
 > **Admin account:** Since Cognito self-signup is disabled, Step 16 creates the initial admin user. `ADMIN_EMAIL` and `ADMIN_PASSWORD` are required env vars — the script will not start without them.
 
@@ -242,6 +269,10 @@ cloud_native_nanoclaw/
 │   ├── types.ts              # User, Bot, Channel, Message, Task, Session...
 │   ├── xml-formatter.ts      # Agent context formatting (from NanoClaw)
 │   └── text-utils.ts         # Output processing
+├── auth-service/src/
+│   ├── server.ts             # Fastify auth service (login, refresh, admin)
+│   ├── jwt.ts                # RS256 signing, JWKS endpoint
+│   └── password.ts           # bcrypt password hashing
 ├── infra/
 │   ├── bin/app.ts            # CDK app entry
 │   └── lib/
@@ -285,7 +316,7 @@ cloud_native_nanoclaw/
 
 ## Security
 
-- **Auth**: Cognito JWT on all `/api/*` routes
+- **Auth**: Cognito JWT on all `/api/*` routes (agentcore mode) or self-hosted JWKS JWT (ecs mode)
 - **Webhooks**: Per-channel signature verification (Telegram secret token, Discord Ed25519, Slack HMAC-SHA256)
 - **Data isolation**: ABAC via STS SessionTags — agents can only access their owner's S3 paths and DynamoDB records
 - **Network**: Fargate in private subnets, WAF rate limiting (2000 req/5min/IP)
