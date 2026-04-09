@@ -1,7 +1,6 @@
 // auth-service/src/server.ts — Self-hosted OIDC-compatible auth service
 
 import Fastify from 'fastify';
-import pino from 'pino';
 import { z } from 'zod';
 import { ulid } from 'ulid';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -9,7 +8,7 @@ import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCom
 import { initKeys, signAccessToken, signRefreshToken, verifyToken, getJwks } from './jwt.js';
 import { hashPassword, verifyPassword } from './password.js';
 
-const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
+const logLevel = process.env.LOG_LEVEL || 'info';
 
 const PORT = Number(process.env.PORT) || 3001;
 const REGION = process.env.AWS_REGION || 'us-east-1';
@@ -79,7 +78,8 @@ async function getUserById(userId: string): Promise<AuthUser | null> {
 
 // ── Fastify app ──────────────────────────────────────────────────────────
 
-const app = Fastify({ logger });
+const app = Fastify({ logger: { level: logLevel } });
+const logger = app.log;
 
 app.get('/auth/.well-known/jwks.json', async () => getJwks());
 

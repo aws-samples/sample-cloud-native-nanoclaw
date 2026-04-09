@@ -36,9 +36,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends dumb-init && rm
 
 WORKDIR /app
 
-# Copy built artifacts and hoisted node_modules
+# Copy built artifacts and node_modules (hoisted + workspace-local)
 COPY --from=builder /app/auth-service/dist/ ./dist/
 COPY --from=builder /app/node_modules/ ./node_modules/
+COPY --from=builder /app/auth-service/node_modules/ ./node_modules/
 COPY --from=builder /app/shared/dist/ ./node_modules/@clawbot/shared/dist/
 COPY --from=builder /app/shared/package.json ./node_modules/@clawbot/shared/
 COPY --from=builder /app/auth-service/package.json ./
