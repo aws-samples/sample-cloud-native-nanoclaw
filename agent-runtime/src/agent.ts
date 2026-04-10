@@ -238,6 +238,13 @@ async function _handleInvocation(
   // invocation must be removed before downloading the current user's data from S3.
   await cleanLocalWorkspace();
 
+  // 2b. Download platform-managed skills first (before S3 session sync)
+  if (payload.skills?.length) {
+    logger.info({ skillCount: payload.skills.length }, 'Downloading enabled skills');
+    await downloadSkills(s3, SESSION_BUCKET, payload.skills, logger);
+  }
+
+  // 2c. Sync session from S3 (overlays user-installed skills on top of bundled + platform)
   const forceNewSession = !!payload.forceNewSession;
   if (forceNewSession) {
     logger.info(
@@ -251,18 +258,12 @@ async function _handleInvocation(
     await syncFromS3(s3, SESSION_BUCKET, syncPaths, logger);
   }
 
-  // 2b. Download inbound attachments to /workspace/group/attachments/
+  // 2d. Download inbound attachments to /workspace/group/attachments/
   if (payload.attachments?.length) {
     await downloadAttachments(s3, SESSION_BUCKET, payload.attachments, logger);
   }
 
-  // 2c. Download enabled skills to ~/.claude/skills/
-  if (payload.skills?.length) {
-    logger.info({ skillCount: payload.skills.length }, 'Downloading enabled skills');
-    await downloadSkills(s3, SESSION_BUCKET, payload.skills, logger);
-  }
-
-  // 2d. Install MCP server npm packages
+  // 2e. Install MCP server npm packages
   if (payload.mcpConfigs?.length) {
     await installMcpPackages(payload.mcpConfigs, logger);
   }
