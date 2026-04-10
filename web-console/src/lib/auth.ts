@@ -26,6 +26,8 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 let oidcAccessToken = localStorage.getItem('clawbot_access_token') || '';
 let oidcRefreshToken = localStorage.getItem('clawbot_refresh_token') || '';
+let pendingForceChangeEmail = '';
+let pendingForceChangePassword = '';
 
 function persistTokens(access: string, refresh: string) {
   oidcAccessToken = access;
@@ -123,6 +125,8 @@ async function oidcLogin(email: string, password: string): Promise<{ needsNewPas
   }
   const data = await res.json();
   if (data.challengeName === 'NEW_PASSWORD_REQUIRED') {
+    pendingForceChangeEmail = email;
+    pendingForceChangePassword = password;
     return { needsNewPassword: true, user: null };
   }
   persistTokens(data.accessToken, data.refreshToken);
@@ -131,12 +135,21 @@ async function oidcLogin(email: string, password: string): Promise<{ needsNewPas
 }
 
 async function oidcCompleteNewPassword(newPassword: string): Promise<AuthUser | null> {
-  const res = await fetch(`${AUTH_ENDPOINT}/auth/change-password`, {
+  const res = await fetch(`${AUTH_ENDPOINT}/auth/force-change-password`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${oidcAccessToken}` },
-    body: JSON.stringify({ newPassword }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: pendingForceChangeEmail,
+      currentPassword: pendingForceChangePassword,
+      newPassword,
+    }),
   });
-  if (!res.ok) throw new Error('Password change failed');
+  pendingForceChangeEmail = '';
+  pendingForceChangePassword = '';
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: 'Password change failed' }));
+    throw new Error(body.error || 'Password change failed');
+  }
   const data = await res.json();
   persistTokens(data.accessToken, data.refreshToken);
   return oidcCheckUser();

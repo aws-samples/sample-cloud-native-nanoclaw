@@ -99,15 +99,28 @@ export async function signRefreshToken(sub: string): Promise<string> {
     .sign(privateKey);
 }
 
-export async function verifyToken(token: string): Promise<TokenClaims> {
+export async function verifyAccessToken(token: string): Promise<TokenClaims> {
   const { payload } = await jwtVerify(token, publicKey, {
     issuer: 'clawbot-auth',
   });
+  if ((payload as Record<string, unknown>).token_use !== 'access') {
+    throw new Error('Invalid token type: expected access token');
+  }
   return {
     sub: payload.sub!,
     email: (payload as Record<string, unknown>).email as string,
     groups: ((payload as Record<string, unknown>)['cognito:groups'] as string[]) || [],
   };
+}
+
+export async function verifyRefreshToken(token: string): Promise<{ sub: string }> {
+  const { payload } = await jwtVerify(token, publicKey, {
+    issuer: 'clawbot-auth',
+  });
+  if ((payload as Record<string, unknown>).token_use !== 'refresh') {
+    throw new Error('Invalid token type: expected refresh token');
+  }
+  return { sub: payload.sub! };
 }
 
 export function getJwks(): object {

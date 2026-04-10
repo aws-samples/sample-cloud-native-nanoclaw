@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { ulid } from 'ulid';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
-import { initKeys, signAccessToken, signRefreshToken, verifyToken, getJwks } from './jwt.js';
+import { initKeys, signAccessToken, signRefreshToken, verifyAccessToken, verifyRefreshToken, getJwks } from './jwt.js';
 import { hashPassword, verifyPassword } from './password.js';
 
 const logLevel = process.env.LOG_LEVEL || 'info';
@@ -63,7 +63,6 @@ async function getUserByEmail(email: string): Promise<AuthUser | null> {
     TableName: USERS_TABLE,
     FilterExpression: 'email = :email',
     ExpressionAttributeValues: { ':email': email },
-    Limit: 100,
   }));
   return (res.Items?.[0] as AuthUser) || null;
 }
@@ -128,8 +127,8 @@ app.post('/auth/refresh', async (request, reply) => {
   const { refreshToken } = refreshSchema.parse(request.body);
 
   try {
-    const claims = await verifyToken(refreshToken);
-    const user = await getUserById(claims.sub);
+    const { sub } = await verifyRefreshToken(refreshToken);
+    const user = await getUserById(sub);
     if (!user || user.status === 'suspended' || user.status === 'deleted') {
       return reply.status(403).send({ error: 'Account unavailable' });
     }
@@ -154,7 +153,7 @@ app.post('/auth/change-password', async (request, reply) => {
 
   let claims;
   try {
-    claims = await verifyToken(authHeader.substring(7));
+    claims = await verifyAccessToken(authHeader.substring(7));
   } catch {
     return reply.status(401).send({ error: 'Invalid token' });
   }
@@ -202,6 +201,43 @@ app.post('/auth/change-password', async (request, reply) => {
   return { ok: true };
 });
 
+// ── Force Change Password (unauthenticated — for NEW_PASSWORD_REQUIRED flow)
+
+app.post('/auth/force-change-password', async (request, reply) => {
+  const { email, currentPassword, newPassword } = z.object({
+    email: z.string().email(),
+    currentPassword: z.string().min(1),
+    newPassword: z.string().min(8),
+  }).parse(request.body);
+
+  const user = await getUserByEmail(email);
+  if (!user || !user.passwordHash) {
+    return reply.status(401).send({ error: 'Invalid credentials' });
+  }
+  if (!user.forcePasswordChange) {
+    return reply.status(400).send({ error: 'Password change not required' });
+  }
+
+  const valid = await verifyPassword(currentPassword, user.passwordHash);
+  if (!valid) {
+    return reply.status(401).send({ error: 'Invalid credentials' });
+  }
+
+  const hash = await hashPassword(newPassword);
+  await ddb.send(new UpdateCommand({
+    TableName: USERS_TABLE,
+    Key: { userId: user.userId },
+    UpdateExpression: 'SET passwordHash = :ph REMOVE forcePasswordChange',
+    ExpressionAttributeValues: { ':ph': hash },
+  }));
+
+  const groups = user.isAdmin ? ['clawbot-admins'] : [];
+  const accessToken = await signAccessToken({ sub: user.userId, email, groups });
+  const refreshToken = await signRefreshToken(user.userId);
+
+  return { accessToken, refreshToken, userId: user.userId };
+});
+
 // ── Admin endpoints ──────────────────────────────────────────────────────
 
 app.register(async (admin) => {
@@ -211,7 +247,7 @@ app.register(async (admin) => {
       return reply.status(401).send({ error: 'Missing authorization' });
     }
     try {
-      const claims = await verifyToken(authHeader.substring(7));
+      const claims = await verifyAccessToken(authHeader.substring(7));
       if (!claims.groups.includes('clawbot-admins')) {
         return reply.status(403).send({ error: 'Admin access required' });
       }
