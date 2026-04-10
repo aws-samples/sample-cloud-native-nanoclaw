@@ -537,9 +537,33 @@ function FeishuGuide({ step }: { step: 'before' | 'after' }) {
           <div className="flex gap-3">
             <StepNum n={4} />
             <div>
-              <p className="font-medium text-slate-900">{t('channelSetup.feishu.step4title')}</p>
+              <p className="font-medium text-slate-900">{t('channelSetup.feishu.step4eventTitle')}</p>
               <p className="text-slate-600 mt-0.5">
-                <Trans i18nKey="channelSetup.feishu.step4desc">
+                <Trans i18nKey="channelSetup.feishu.step4eventDesc">
+                  在「<strong>事件与回调</strong>」的事件订阅设置中，选择「<strong>使用长连接接收事件</strong>」方式
+                </Trans>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <StepNum n={5} />
+            <div>
+              <p className="font-medium text-slate-900">{t('channelSetup.feishu.step5eventTitle')}</p>
+              <p className="text-slate-600 mt-0.5">
+                <Trans i18nKey="channelSetup.feishu.step5eventDesc">
+                  添加事件：<code className="bg-slate-100 px-1 rounded text-slate-800">im.message.receive_v1</code>（接收消息）
+                </Trans>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <StepNum n={6} />
+            <div>
+              <p className="font-medium text-slate-900">{t('channelSetup.feishu.step6permTitle')}</p>
+              <p className="text-slate-600 mt-0.5">
+                <Trans i18nKey="channelSetup.feishu.step6permDesc">
                   在「<strong>权限管理</strong>」中申请以下权限：
                 </Trans>
               </p>
@@ -636,11 +660,11 @@ function FeishuGuide({ step }: { step: 'before' | 'after' }) {
           </div>
 
           <div className="flex gap-3">
-            <StepNum n={5} />
+            <StepNum n={7} />
             <div>
-              <p className="font-medium text-slate-900">{t('channelSetup.feishu.step5title')}</p>
+              <p className="font-medium text-slate-900">{t('channelSetup.feishu.step7pubTitle')}</p>
               <p className="text-slate-600 mt-0.5">
-                {t('channelSetup.feishu.step5desc')}
+                {t('channelSetup.feishu.step7pubDesc')}
               </p>
             </div>
           </div>
@@ -669,30 +693,6 @@ function FeishuGuide({ step }: { step: 'before' | 'after' }) {
         <div className="flex gap-3">
           <StepNum n={1} variant="success" />
           <div>
-            <p className="font-medium text-green-900">{t('channelSetup.feishu.afterStep1title')}</p>
-            <p className="text-green-700 mt-0.5">
-              <Trans i18nKey="channelSetup.feishu.afterStep1desc">
-                在「<strong>事件与回调</strong>」的事件订阅设置中，选择「<strong>使用长连接接收事件</strong>」方式
-              </Trans>
-            </p>
-          </div>
-        </div>
-
-        <div className="flex gap-3">
-          <StepNum n={2} variant="success" />
-          <div>
-            <p className="font-medium text-green-900">{t('channelSetup.feishu.afterStep2title')}</p>
-            <p className="text-green-700 mt-0.5">
-              <Trans i18nKey="channelSetup.feishu.afterStep2desc">
-                添加事件：<code className="bg-green-100 px-1 rounded">im.message.receive_v1</code>（接收消息）
-              </Trans>
-            </p>
-          </div>
-        </div>
-
-        <div className="flex gap-3">
-          <StepNum n={3} variant="success" />
-          <div>
             <p className="font-medium text-green-900">{t('channelSetup.feishu.afterStep3title')}</p>
             <p className="text-green-700 mt-0.5">
               <Trans i18nKey="channelSetup.feishu.afterStep3desc">
@@ -703,7 +703,7 @@ function FeishuGuide({ step }: { step: 'before' | 'after' }) {
         </div>
 
         <div className="flex gap-3">
-          <StepNum n={4} variant="success" />
+          <StepNum n={2} variant="success" />
           <div>
             <p className="font-medium text-green-900">{t('channelSetup.feishu.afterStep4title')}</p>
             <p className="text-green-700 mt-0.5">
@@ -713,7 +713,7 @@ function FeishuGuide({ step }: { step: 'before' | 'after' }) {
         </div>
 
         <div className="flex gap-3">
-          <StepNum n={5} variant="success" />
+          <StepNum n={3} variant="success" />
           <div>
             <p className="font-medium text-green-900">{t('channelSetup.feishu.afterStep5title')}</p>
             <p className="text-green-700 mt-0.5">
