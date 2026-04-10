@@ -421,17 +421,42 @@ log "Step 16: Seed default admin account"
 USERS_TABLE="${PREFIX}-${STAGE}-users"
 
 if [ "$DEPLOY_MODE" = "ecs" ]; then
-  log "  Seeding admin via auth-service..."
-  AUTH_ENDPOINT=$(jq -r ".\"${STACK_PREFIX}-Auth\".AuthEndpoint // empty" "$CDK_OUTPUTS")
-  for i in $(seq 1 30); do
-    if curl -sf "${AUTH_ENDPOINT}/auth/health" >/dev/null 2>&1; then break; fi
-    echo "  Waiting for auth service... ($i/30)"
-    sleep 10
-  done
-  curl -sf -X POST "${AUTH_ENDPOINT}/admin/users" \
-    -H "Content-Type: application/json" \
-    -H "X-Bootstrap-Secret: ${ADMIN_BOOTSTRAP_SECRET:-bootstrap}" \
-    -d "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\",\"plan\":\"enterprise\",\"isAdmin\":true}" || echo "  Admin may already exist"
+  log "  Seeding admin directly in DynamoDB (ECS mode)..."
+  # Generate bcrypt hash and ULID via Node.js one-liner
+  ADMIN_SEED=$(node -e "
+    import bcrypt from 'bcrypt';
+    const hash = await bcrypt.hash(process.argv[1], 10);
+    const t = Date.now() - 1469918176385;
+    const id = (t.toString(36).padStart(10,'0') + Array.from({length:16},()=>'0123456789abcdefghjkmnpqrstvwxyz'[Math.random()*32|0]).join('')).toUpperCase();
+    console.log(JSON.stringify({ userId: id, passwordHash: hash }));
+  " "$ADMIN_PASSWORD")
+  ADMIN_USER_ID=$(echo "$ADMIN_SEED" | jq -r '.userId')
+  ADMIN_HASH=$(echo "$ADMIN_SEED" | jq -r '.passwordHash')
+
+  # Check if admin already exists by email (scan — only runs once during deploy)
+  EXISTING=$(aws dynamodb scan --table-name "$USERS_TABLE" --region "$REGION" \
+    --filter-expression "email = :e" \
+    --expression-attribute-values "{\":e\":{\"S\":\"$ADMIN_EMAIL\"}}" \
+    --select COUNT --query 'Count' --output text 2>/dev/null || echo "0")
+
+  if [ "$EXISTING" = "0" ]; then
+    aws dynamodb put-item --table-name "$USERS_TABLE" --region "$REGION" --item "$(cat <<ITEM
+{
+  "userId": {"S": "$ADMIN_USER_ID"},
+  "email": {"S": "$ADMIN_EMAIL"},
+  "passwordHash": {"S": "$ADMIN_HASH"},
+  "plan": {"S": "enterprise"},
+  "status": {"S": "active"},
+  "isAdmin": {"BOOL": true},
+  "createdAt": {"S": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"},
+  "botCount": {"N": "0"}
+}
+ITEM
+)"
+    log "  Admin user created: $ADMIN_EMAIL ($ADMIN_USER_ID)"
+  else
+    log "  Admin user already exists: $ADMIN_EMAIL"
+  fi
 else
   # Cognito admin seeding (agentcore mode)
   # Check if admin already exists in Cognito
