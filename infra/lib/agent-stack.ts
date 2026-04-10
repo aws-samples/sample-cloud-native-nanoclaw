@@ -307,6 +307,12 @@ export class AgentStack extends cdk.Stack {
           STAGE: stage,
           AWS_REGION: this.region,
           PORT: '8080',
+          SCOPED_ROLE_ARN: this.agentScopedRole.roleArn,
+          SESSION_BUCKET: dataBucket.bucketName,
+          SQS_REPLIES_URL: replyQueue.queueUrl,
+          TABLE_TASKS: tables.tasks.tableName,
+          SCHEDULER_ROLE_ARN: this.schedulerRole.roleArn,
+          SQS_MESSAGES_ARN: messageQueue.queueArn,
         },
         logging: ecs.LogDrivers.awsLogs({
           logGroup,
@@ -337,7 +343,7 @@ export class AgentStack extends cdk.Stack {
       // Auto-scaling
       const scaling = service.autoScaleTaskCount({
         minCapacity: 2,
-        maxCapacity: 20,
+        maxCapacity: 100,
       });
       scaling.scaleOnCpuUtilization('CpuScaling', {
         targetUtilizationPercent: 70,
