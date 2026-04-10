@@ -336,11 +336,22 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      await softDeleteUser(request.params.userId);
+      if (config.agentMode === 'ecs') {
+        // Hard delete — remove record entirely to avoid stale email conflicts
+        const { DeleteCommand } = await import('@aws-sdk/lib-dynamodb');
+        const { DynamoDBDocumentClient } = await import('@aws-sdk/lib-dynamodb');
+        const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
+        const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: config.region }));
+        await ddb.send(new DeleteCommand({
+          TableName: config.tables.users,
+          Key: { userId: request.params.userId },
+        }));
+      } else {
+        await softDeleteUser(request.params.userId);
+      }
     } catch (err) {
-      request.log.error({ err, userId: request.params.userId }, 'DDB soft-delete failed after Cognito disable');
-      // Cognito is already disabled — log for manual remediation
-      return reply.status(500).send({ error: 'User disabled in auth but database update failed' });
+      request.log.error({ err, userId: request.params.userId }, 'DDB delete failed');
+      return reply.status(500).send({ error: 'Failed to delete user record' });
     }
     return { ok: true };
   });
