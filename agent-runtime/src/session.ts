@@ -167,7 +167,7 @@ export async function syncMemoryOnlyFromS3(
 // ---------------------------------------------------------------------------
 
 /** Directory names that should never be synced to/from S3. */
-const EXCLUDED_DIRS = new Set(['.git', 'node_modules', '.venv', '__pycache__']);
+const EXCLUDED_DIRS = new Set(['.git', 'node_modules', '.venv', '__pycache__', 'skills']);
 
 /** Files that should never be synced to/from S3 (managed at runtime, not persisted). */
 const EXCLUDED_FILES = new Set(['settings.json']);
