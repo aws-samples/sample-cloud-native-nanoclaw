@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Users, CreditCard, Save, Plus, Ban, PlayCircle, Trash2, Zap, Upload, GitBranch, X, Server, Copy, CheckCircle2, KeyRound } from 'lucide-react';
+import { Users, CreditCard, Save, Plus, Ban, PlayCircle, Trash2, Zap, Upload, GitBranch, X, Server, Copy, CheckCircle2, KeyRound, Pencil } from 'lucide-react';
 import { clsx } from 'clsx';
 import TabNav from '../../components/TabNav';
 import Badge from '../../components/Badge';
@@ -691,6 +691,7 @@ function McpServersTab() {
   const [servers, setServers] = useState<McpServer[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   // Form state
@@ -726,6 +727,7 @@ function McpServersTab() {
 
   function resetForm() {
     setShowAdd(false);
+    setEditingId(null);
     setServerType('stdio');
     setName(''); setDescription(''); setVersion('1.0.0');
     setCommand(''); setArgs([]); setNewArg('');
@@ -734,7 +736,23 @@ function McpServersTab() {
     setEnvVars([]); setTools([]);
   }
 
-  async function handleCreate() {
+  function startEdit(server: McpServer) {
+    setEditingId(server.mcpServerId);
+    setShowAdd(true);
+    setServerType(server.type as 'stdio' | 'sse' | 'http');
+    setName(server.name);
+    setDescription(server.description || '');
+    setVersion(server.version || '1.0.0');
+    setCommand(server.command || '');
+    setArgs(server.args || []);
+    setNpmPackages(server.npmPackages || []);
+    setUrl(server.url || '');
+    setHeaders(server.headers ? Object.entries(server.headers).map(([key, value]) => ({ key, value })) : []);
+    setEnvVars((server.envVars || []).map((ev) => ({ name: ev.name, template: ev.template || '' })));
+    setTools((server.tools || []).map((t) => ({ name: t.name, description: t.description || '' })));
+  }
+
+  async function handleSubmit() {
     if (!name.trim()) return;
     setSubmitting(true);
     try {
@@ -759,12 +777,16 @@ function McpServersTab() {
       if (envVars.length) data.envVars = envVars.filter((ev) => ev.name.trim());
       if (tools.length) data.tools = tools.filter((tool) => tool.name.trim());
 
-      await admin.createMcpServer(data);
+      if (editingId) {
+        await admin.updateMcpServer(editingId, data);
+      } else {
+        await admin.createMcpServer(data);
+      }
       resetForm();
       loadServers();
     } catch (err) {
-      console.error('Failed to create MCP server:', err);
-      alert(err instanceof Error ? err.message : 'Create failed');
+      console.error('Failed to save MCP server:', err);
+      alert(err instanceof Error ? err.message : 'Save failed');
     } finally {
       setSubmitting(false);
     }
@@ -977,9 +999,9 @@ function McpServersTab() {
               </button>
             </div>
 
-            <button onClick={handleCreate} disabled={submitting || !name.trim()}
+            <button onClick={handleSubmit} disabled={submitting || !name.trim()}
               className="rounded-lg bg-accent-500 text-white px-4 py-2 text-sm font-medium hover:bg-accent-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-              {submitting ? t('common.creating') : t('common.create')}
+              {submitting ? t('common.saving') : editingId ? t('common.save') : t('common.create')}
             </button>
           </div>
         </div>
@@ -1023,12 +1045,20 @@ function McpServersTab() {
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-500">{formatDate(server.createdAt)}</td>
                 <td className="px-6 py-4 whitespace-nowrap">
-                  <button
-                    onClick={() => handleDelete(server)}
-                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"
-                  >
-                    <Trash2 size={14} /> {t('common.delete')}
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => startEdit(server)}
+                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-accent-600 hover:bg-accent-50 transition-colors"
+                    >
+                      <Pencil size={14} /> {t('common.edit')}
+                    </button>
+                    <button
+                      onClick={() => handleDelete(server)}
+                      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"
+                    >
+                      <Trash2 size={14} /> {t('common.delete')}
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
