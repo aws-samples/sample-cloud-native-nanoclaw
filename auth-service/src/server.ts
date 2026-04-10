@@ -4,7 +4,7 @@ import Fastify from 'fastify';
 import { z } from 'zod';
 import { ulid } from 'ulid';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { initKeys, signAccessToken, signRefreshToken, verifyToken, getJwks } from './jwt.js';
 import { hashPassword, verifyPassword } from './password.js';
 
@@ -58,12 +58,11 @@ interface AuthUser {
 }
 
 async function getUserByEmail(email: string): Promise<AuthUser | null> {
-  const res = await ddb.send(new QueryCommand({
+  const res = await ddb.send(new ScanCommand({
     TableName: USERS_TABLE,
-    IndexName: 'email-index',
-    KeyConditionExpression: 'email = :email',
+    FilterExpression: 'email = :email',
     ExpressionAttributeValues: { ':email': email },
-    Limit: 1,
+    Limit: 100,
   }));
   return (res.Items?.[0] as AuthUser) || null;
 }
