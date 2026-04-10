@@ -80,6 +80,7 @@ export class AuthStack extends cdk.Stack {
             'dynamodb:UpdateItem',
             'dynamodb:DeleteItem',
             'dynamodb:Query',
+            'dynamodb:Scan',
           ],
           resources: [
             `arn:aws:dynamodb:${this.region}:${this.account}:table/nanoclawbot-${stage}-users`,
