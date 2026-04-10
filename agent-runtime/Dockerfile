@@ -89,7 +89,17 @@ RUN mkdir -p /etc/claude-code
 COPY agent-runtime/templates/MANAGED_CLAUDE.md /etc/claude-code/CLAUDE.md
 
 # Workspace directories
-RUN mkdir -p /workspace/group /workspace/learnings /workspace/reference /workspace/extra /home/node/.claude
+RUN mkdir -p /workspace/group /workspace/learnings /workspace/reference /workspace/extra /home/node/.claude \
+    && cat > /home/node/.claude/settings.json << 'SETTINGS'
+{
+  "permissions": {
+    "allow": [
+      "Edit(/home/node/.claude/*)",
+      "Write(/home/node/.claude/*)"
+    ]
+  }
+}
+SETTINGS
 
 # Pre-bundled skills (local)
 COPY agent-runtime/skills/ /home/node/.claude/skills/
