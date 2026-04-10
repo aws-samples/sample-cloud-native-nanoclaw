@@ -61,8 +61,9 @@ interface AuthUser {
 async function getUserByEmail(email: string): Promise<AuthUser | null> {
   const res = await ddb.send(new ScanCommand({
     TableName: USERS_TABLE,
-    FilterExpression: 'email = :email',
-    ExpressionAttributeValues: { ':email': email },
+    FilterExpression: 'email = :email AND #s <> :deleted',
+    ExpressionAttributeNames: { '#s': 'status' },
+    ExpressionAttributeValues: { ':email': email, ':deleted': 'deleted' },
   }));
   return (res.Items?.[0] as AuthUser) || null;
 }
