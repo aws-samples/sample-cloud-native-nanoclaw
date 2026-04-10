@@ -96,7 +96,7 @@ export class AgentStack extends cdk.Stack {
         effect: iam.Effect.ALLOW,
         actions: ['secretsmanager:GetSecretValue'],
         resources: [
-          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:nanoclawbot/${stage}/*`,
+          `arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:nanoclawbot/${stage}/*`,
         ],
       }),
     );
@@ -123,7 +123,7 @@ export class AgentStack extends cdk.Stack {
           sid: 'CloudWatchLogsCreate',
           effect: iam.Effect.ALLOW,
           actions: ['logs:CreateLogGroup', 'logs:DescribeLogStreams'],
-          resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/*`],
+          resources: [`arn:${this.partition}:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/*`],
         }),
       );
       this.agentBaseRole.addToPolicy(
@@ -131,7 +131,7 @@ export class AgentStack extends cdk.Stack {
           sid: 'CloudWatchLogsDescribe',
           effect: iam.Effect.ALLOW,
           actions: ['logs:DescribeLogGroups'],
-          resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:*`],
+          resources: [`arn:${this.partition}:logs:${this.region}:${this.account}:log-group:*`],
         }),
       );
       this.agentBaseRole.addToPolicy(
@@ -139,7 +139,7 @@ export class AgentStack extends cdk.Stack {
           sid: 'CloudWatchLogsPut',
           effect: iam.Effect.ALLOW,
           actions: ['logs:CreateLogStream', 'logs:PutLogEvents'],
-          resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/*:log-stream:*`],
+          resources: [`arn:${this.partition}:logs:${this.region}:${this.account}:log-group:/aws/bedrock-agentcore/runtimes/*:log-stream:*`],
         }),
       );
 
@@ -243,7 +243,7 @@ export class AgentStack extends cdk.Stack {
           'scheduler:GetSchedule',
         ],
         resources: [
-          `arn:aws:scheduler:${this.region}:${this.account}:schedule/default/nanoclawbot-*`,
+          `arn:${this.partition}:scheduler:${this.region}:${this.account}:schedule/default/nanoclawbot-*`,
         ],
       }),
     );
@@ -254,7 +254,7 @@ export class AgentStack extends cdk.Stack {
         sid: 'PassSchedulerRole',
         effect: iam.Effect.ALLOW,
         actions: ['iam:PassRole'],
-        resources: [`arn:aws:iam::${this.account}:role/NanoClawBotSchedulerRole-${stage}`],
+        resources: [`arn:${this.partition}:iam::${this.account}:role/NanoClawBotSchedulerRole-${stage}`],
       }),
     );
 

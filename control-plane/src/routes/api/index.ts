@@ -74,6 +74,9 @@ class JwksVerifierAdapter implements JwtVerifierAdapter {
   }
   async verify(token: string): Promise<JwtClaims> {
     const { payload } = await jwtVerify(token, this.jwks);
+    if ((payload as Record<string, unknown>).token_use !== 'access') {
+      throw new Error('Invalid token type: expected access token');
+    }
     return {
       sub: payload.sub!,
       email: (payload as Record<string, unknown>).email as string || '',

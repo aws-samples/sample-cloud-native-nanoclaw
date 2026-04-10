@@ -203,7 +203,7 @@ export class ControlPlaneStack extends cdk.Stack {
         sid: 'SsmReadConfig',
         effect: iam.Effect.ALLOW,
         actions: ['ssm:GetParameter'],
-        resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/nanoclawbot/${stage}/*`],
+        resources: [`arn:${this.partition}:ssm:${this.region}:${this.account}:parameter/nanoclawbot/${stage}/*`],
       }),
     );
 
@@ -219,7 +219,7 @@ export class ControlPlaneStack extends cdk.Stack {
           'secretsmanager:DeleteSecret',
           'secretsmanager:UpdateSecret',
         ],
-        resources: [`arn:aws:secretsmanager:${this.region}:${this.account}:secret:nanoclawbot/${stage}/*`],
+        resources: [`arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:nanoclawbot/${stage}/*`],
       }),
     );
 
@@ -230,7 +230,7 @@ export class ControlPlaneStack extends cdk.Stack {
           sid: 'AgentCoreInvoke',
           effect: iam.Effect.ALLOW,
           actions: ['bedrock-agentcore:InvokeAgentRuntime'],
-          resources: [`arn:aws:bedrock-agentcore:${this.region}:${this.account}:runtime/nanoclawbot_${stage}-*`],
+          resources: [`arn:${this.partition}:bedrock-agentcore:${this.region}:${this.account}:runtime/nanoclawbot_${stage}-*`],
         }),
       );
     }
@@ -246,7 +246,7 @@ export class ControlPlaneStack extends cdk.Stack {
           'scheduler:UpdateSchedule',
           'scheduler:DeleteSchedule',
         ],
-        resources: [`arn:aws:scheduler:${this.region}:${this.account}:schedule/default/nanoclawbot-*`],
+        resources: [`arn:${this.partition}:scheduler:${this.region}:${this.account}:schedule/default/nanoclawbot-*`],
       }),
     );
     taskRole.addToPrincipalPolicy(
@@ -265,8 +265,8 @@ export class ControlPlaneStack extends cdk.Stack {
         effect: iam.Effect.ALLOW,
         actions: ['ecs:RunTask', 'ecs:DescribeTasks', 'ecs:StopTask'],
         resources: [
-          `arn:aws:ecs:${this.region}:${this.account}:task/${this.cluster.clusterName}/*`,
-          `arn:aws:ecs:${this.region}:${this.account}:task-definition/nanoclawbot-${stage}-*`,
+          `arn:${this.partition}:ecs:${this.region}:${this.account}:task/${this.cluster.clusterName}/*`,
+          `arn:${this.partition}:ecs:${this.region}:${this.account}:task-definition/nanoclawbot-${stage}-*`,
         ],
       }),
     );

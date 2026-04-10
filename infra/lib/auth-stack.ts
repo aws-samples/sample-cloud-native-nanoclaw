@@ -83,8 +83,8 @@ export class AuthStack extends cdk.Stack {
             'dynamodb:Scan',
           ],
           resources: [
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/nanoclawbot-${stage}-users`,
-            `arn:aws:dynamodb:${this.region}:${this.account}:table/nanoclawbot-${stage}-users/index/*`,
+            `arn:${this.partition}:dynamodb:${this.region}:${this.account}:table/nanoclawbot-${stage}-users`,
+            `arn:${this.partition}:dynamodb:${this.region}:${this.account}:table/nanoclawbot-${stage}-users/index/*`,
           ],
         }),
       );
@@ -94,7 +94,7 @@ export class AuthStack extends cdk.Stack {
           effect: iam.Effect.ALLOW,
           actions: ['secretsmanager:GetSecretValue', 'secretsmanager:CreateSecret', 'secretsmanager:PutSecretValue'],
           resources: [
-            `arn:aws:secretsmanager:${this.region}:${this.account}:secret:nanoclawbot/${stage}/*`,
+            `arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:nanoclawbot/${stage}/*`,
           ],
         }),
       );
