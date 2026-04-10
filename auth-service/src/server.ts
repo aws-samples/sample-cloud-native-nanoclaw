@@ -1,6 +1,7 @@
 // auth-service/src/server.ts — Self-hosted OIDC-compatible auth service
 
 import Fastify from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import { z } from 'zod';
 import { ulid } from 'ulid';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -86,13 +87,20 @@ const app = Fastify({
 });
 const logger = app.log;
 
+// Rate limiting — protect auth endpoints from brute-force
+await app.register(rateLimit, {
+  global: true,
+  max: 100,           // 100 requests per window globally
+  timeWindow: '1 minute',
+});
+
 app.get('/auth/.well-known/jwks.json', async () => getJwks());
 
 app.get('/auth/health', async () => ({ status: 'ok' }));
 
 // ── Login ────────────────────────────────────────────────────────────────
 
-app.post('/auth/login', async (request, reply) => {
+app.post('/auth/login', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
   const { email, password } = loginSchema.parse(request.body);
 
   const user = await getUserByEmail(email);
@@ -204,7 +212,7 @@ app.post('/auth/change-password', async (request, reply) => {
 
 // ── Force Change Password (unauthenticated — for NEW_PASSWORD_REQUIRED flow)
 
-app.post('/auth/force-change-password', async (request, reply) => {
+app.post('/auth/force-change-password', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
   const { email, currentPassword, newPassword } = z.object({
     email: z.string().email(),
     currentPassword: z.string().min(1),
