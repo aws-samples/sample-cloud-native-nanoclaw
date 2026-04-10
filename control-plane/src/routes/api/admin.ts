@@ -138,11 +138,32 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
       }
       const result = await res.json() as { userId: string; email: string };
 
-      // Create full user record with plan quotas (auth-service only stores auth fields)
+      // Enrich auth-service record with plan quotas (UpdateCommand to preserve passwordHash)
       try {
-        await createUserRecord(result.userId, email, plan);
+        const planQuotas = await getPlanQuotas();
+        const now = new Date().toISOString();
+        const { UpdateCommand } = await import('@aws-sdk/lib-dynamodb');
+        const { DynamoDBDocumentClient } = await import('@aws-sdk/lib-dynamodb');
+        const { DynamoDBClient } = await import('@aws-sdk/client-dynamodb');
+        const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region: config.region }));
+        await ddb.send(new UpdateCommand({
+          TableName: config.tables.users,
+          Key: { userId: result.userId },
+          UpdateExpression: 'SET #plan = :plan, quota = :quota, displayName = :dn, usageMonth = :um, usageTokens = :ut, usageInvocations = :ui, activeAgents = :aa, lastLogin = :ll',
+          ExpressionAttributeNames: { '#plan': 'plan' },
+          ExpressionAttributeValues: {
+            ':plan': plan,
+            ':quota': planQuotas[plan as keyof typeof planQuotas],
+            ':dn': email.split('@')[0],
+            ':um': now.slice(0, 7),
+            ':ut': 0,
+            ':ui': 0,
+            ':aa': 0,
+            ':ll': now,
+          },
+        }));
       } catch (err) {
-        request.log.error({ err, userId: result.userId, email }, 'DDB user record write failed after auth-service creation');
+        request.log.error({ err, userId: result.userId, email }, 'DDB user enrichment failed after auth-service creation');
       }
 
       return { ok: true, userId: result.userId, email: result.email, temporaryPassword: tempPassword };
