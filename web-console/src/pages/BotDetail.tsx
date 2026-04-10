@@ -1338,7 +1338,7 @@ function BotMcpTab({ bot, botId, loadData }: { bot: Bot; botId: string; loadData
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-semibold text-slate-900">{t('botDetail.mcp.customServers')}</h3>
           <button
-            onClick={() => setShowAddCustom(!showAddCustom)}
+            onClick={() => { if (showAddCustom) { resetCustomForm(); } else { setEditingCustomId(null); setShowAddCustom(true); } }}
             className="inline-flex items-center gap-1.5 rounded-lg bg-accent-50 text-accent-700 px-3 py-1.5 text-sm font-medium hover:bg-accent-100 transition-colors"
           >
             <Plus size={14} />

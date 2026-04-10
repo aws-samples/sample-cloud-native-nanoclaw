@@ -830,7 +830,7 @@ function McpServersTab() {
     <div className="space-y-4">
       <div className="flex justify-end">
         <button
-          onClick={() => setShowAdd(true)}
+          onClick={() => { setEditingId(null); setShowAdd(true); }}
           className="inline-flex items-center gap-1.5 rounded-lg bg-accent-500 text-white px-4 py-2 text-sm font-medium hover:bg-accent-600 transition-colors"
         >
           <Plus size={16} /> {t('admin.mcpServers.addServer')}
