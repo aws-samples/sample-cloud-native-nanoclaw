@@ -440,16 +440,31 @@ if [ "$DEPLOY_MODE" = "ecs" ]; then
     --select COUNT --query 'Count' --output text 2>/dev/null || echo "0")
 
   if [ "$EXISTING" = "0" ]; then
+    NOWISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    MONTH="$(date -u +%Y-%m)"
     aws dynamodb put-item --table-name "$USERS_TABLE" --region "$REGION" --item "$(cat <<ITEM
 {
   "userId": {"S": "$ADMIN_USER_ID"},
   "email": {"S": "$ADMIN_EMAIL"},
   "passwordHash": {"S": "$ADMIN_HASH"},
+  "displayName": {"S": "${ADMIN_EMAIL%%@*}"},
   "plan": {"S": "enterprise"},
   "status": {"S": "active"},
   "isAdmin": {"BOOL": true},
-  "createdAt": {"S": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"},
-  "botCount": {"N": "0"}
+  "quota": {"M": {
+    "maxBots": {"N": "100"},
+    "maxGroupsPerBot": {"N": "100"},
+    "maxTasksPerBot": {"N": "100"},
+    "maxConcurrentAgents": {"N": "20"},
+    "maxMonthlyTokens": {"N": "1000000000"}
+  }},
+  "usageMonth": {"S": "$MONTH"},
+  "usageTokens": {"N": "0"},
+  "usageInvocations": {"N": "0"},
+  "activeAgents": {"N": "0"},
+  "botCount": {"N": "0"},
+  "createdAt": {"S": "$NOWISO"},
+  "lastLogin": {"S": "$NOWISO"}
 }
 ITEM
 )"

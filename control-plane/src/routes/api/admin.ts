@@ -136,6 +136,14 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(res.status).send(body);
       }
       const result = await res.json() as { userId: string; email: string };
+
+      // Create full user record with plan quotas (auth-service only stores auth fields)
+      try {
+        await createUserRecord(result.userId, email, plan);
+      } catch (err) {
+        request.log.error({ err, userId: result.userId, email }, 'DDB user record write failed after auth-service creation');
+      }
+
       return { ok: true, userId: result.userId, email: result.email };
     }
 
