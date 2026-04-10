@@ -1,8 +1,96 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Ban, PlayCircle, Trash2 } from 'lucide-react';
+import { Plus, Ban, PlayCircle, Trash2, Copy, CheckCircle2, X, KeyRound } from 'lucide-react';
 import { admin, AdminUser } from '../../lib/api';
 import Badge from '../../components/Badge';
+
+// ── Credentials Modal ────────────────────────────────────────────────────
+
+function CredentialsModal({ email, password, onClose }: { email: string; password: string; onClose: () => void }) {
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  async function copyToClipboard(text: string, field: string) {
+    await navigator.clipboard.writeText(text);
+    setCopiedField(field);
+    setTimeout(() => setCopiedField(null), 2000);
+  }
+
+  async function copyAll() {
+    const text = `Email: ${email}\nTemporary Password: ${password}\n\nPlease change your password on first login.`;
+    await navigator.clipboard.writeText(text);
+    setCopiedField('all');
+    setTimeout(() => setCopiedField(null), 2000);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-fade-in">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 overflow-hidden">
+        <div className="bg-gradient-to-r from-green-500 to-emerald-600 px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-white">
+            <KeyRound size={20} />
+            <h3 className="font-semibold text-lg">User Created</h3>
+          </div>
+          <button onClick={onClose} className="text-white/80 hover:text-white transition-colors">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-4">
+          <p className="text-sm text-slate-600">
+            Share these credentials with the user. They will be required to change the password on first login.
+          </p>
+
+          <div className="space-y-3">
+            <div className="bg-slate-50 rounded-lg p-3 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Email</p>
+                <p className="text-sm font-mono text-slate-900 truncate">{email}</p>
+              </div>
+              <button
+                onClick={() => copyToClipboard(email, 'email')}
+                className="flex-shrink-0 p-2 rounded-lg hover:bg-slate-200 transition-colors"
+                title="Copy email"
+              >
+                {copiedField === 'email' ? <CheckCircle2 size={16} className="text-green-500" /> : <Copy size={16} className="text-slate-400" />}
+              </button>
+            </div>
+
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-amber-600 uppercase tracking-wide">Temporary Password</p>
+                <p className="text-sm font-mono text-slate-900 break-all select-all">{password}</p>
+              </div>
+              <button
+                onClick={() => copyToClipboard(password, 'password')}
+                className="flex-shrink-0 p-2 rounded-lg hover:bg-amber-100 transition-colors"
+                title="Copy password"
+              >
+                {copiedField === 'password' ? <CheckCircle2 size={16} className="text-green-500" /> : <Copy size={16} className="text-amber-500" />}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-6 pb-5 flex gap-2">
+          <button
+            onClick={copyAll}
+            className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+          >
+            {copiedField === 'all' ? <><CheckCircle2 size={14} className="text-green-500" /> Copied!</> : <><Copy size={14} /> Copy All</>}
+          </button>
+          <button
+            onClick={onClose}
+            className="flex-1 rounded-lg bg-accent-500 text-white px-4 py-2.5 text-sm font-medium hover:bg-accent-600 transition-colors"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── UserList ─────────────────────────────────────────────────────────────
 
 export default function UserList() {
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -11,6 +99,7 @@ export default function UserList() {
   const [newEmail, setNewEmail] = useState('');
   const [newPlan, setNewPlan] = useState('free');
   const [creating, setCreating] = useState(false);
+  const [createdCreds, setCreatedCreds] = useState<{ email: string; password: string } | null>(null);
 
   function loadUsers() {
     setLoading(true);
@@ -34,7 +123,7 @@ export default function UserList() {
     try {
       const result = await admin.createUser(newEmail.trim(), newPlan);
       if (result.temporaryPassword) {
-        alert(`User created!\n\nEmail: ${result.email}\nTemporary password: ${result.temporaryPassword}\n\nPlease share this password with the user. They will be required to change it on first login.`);
+        setCreatedCreds({ email: result.email, password: result.temporaryPassword });
       }
       setShowCreate(false);
       setNewEmail('');
@@ -223,6 +312,14 @@ export default function UserList() {
           </tbody>
         </table>
       </div>
+
+      {createdCreds && (
+        <CredentialsModal
+          email={createdCreds.email}
+          password={createdCreds.password}
+          onClose={() => setCreatedCreds(null)}
+        />
+      )}
     </div>
   );
 }
