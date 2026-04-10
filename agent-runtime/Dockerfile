@@ -89,8 +89,7 @@ RUN mkdir -p /etc/claude-code
 COPY agent-runtime/templates/MANAGED_CLAUDE.md /etc/claude-code/CLAUDE.md
 
 # Workspace directories
-RUN mkdir -p /workspace/group /workspace/learnings /workspace/reference /workspace/extra /home/node/.claude \
-    && touch /home/node/.claude/CLAUDE.md /workspace/group/CLAUDE.md
+RUN mkdir -p /workspace/group /workspace/learnings /workspace/reference /workspace/extra /home/node/.claude
 
 # Pre-bundled skills (local)
 COPY agent-runtime/skills/ /home/node/.claude/skills/

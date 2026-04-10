@@ -406,7 +406,8 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
 
   // Discover additional directories mounted at /workspace/extra/*
   // (same pattern as NanoClaw for plugin directories)
-  const extraDirs: string[] = [];
+  // Always include /home/node so the SDK can edit ~/.claude/CLAUDE.md (native memory)
+  const extraDirs: string[] = ['/home/node'];
   const extraBase = '/workspace/extra';
   if (fs.existsSync(extraBase)) {
     for (const entry of fs.readdirSync(extraBase)) {
@@ -440,7 +441,7 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
       options: {
         model: payload.model || DEFAULT_MODEL,
         cwd: '/workspace/group',
-        additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
+        additionalDirectories: extraDirs,
         continue: !params.forceNewSession,
         systemPrompt: {
           type: 'preset' as const,
