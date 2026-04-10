@@ -56,6 +56,11 @@
     "setNewPassword": "设置新密码",
     "newPasswordRequired": "您的账户需要设置新密码才能继续。",
     "newPassword": "新密码",
+    "passwordPlaceholder": "至少 8 位字符",
+    "confirmPassword": "确认新密码",
+    "confirmPasswordPlaceholder": "再次输入新密码",
+    "passwordMismatch": "两次输入的密码不一致",
+    "passwordTooShort": "密码长度至少为 8 位",
     "setPassword": "设置密码"
   },
   "dashboard": {

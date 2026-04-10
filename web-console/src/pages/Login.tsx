@@ -10,6 +10,7 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(() => !!localStorage.getItem('clawbot_saved_email'));
   const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -42,6 +43,14 @@ export default function Login() {
   async function handleNewPassword(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+    if (newPassword !== confirmPassword) {
+      setError(t('login.passwordMismatch'));
+      return;
+    }
+    if (newPassword.length < 8) {
+      setError(t('login.passwordTooShort'));
+      return;
+    }
     setLoading(true);
     try {
       await completeNewPassword(newPassword);
@@ -107,13 +116,28 @@ export default function Login() {
                 <input
                   type="password"
                   required
+                  minLength={8}
                   value={newPassword}
                   onChange={e => setNewPassword(e.target.value)}
+                  placeholder={t('login.passwordPlaceholder')}
                   className={inputClasses}
                 />
               </div>
 
-              <button type="submit" disabled={loading} className={buttonClasses}>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">{t('login.confirmPassword')}</label>
+                <input
+                  type="password"
+                  required
+                  minLength={8}
+                  value={confirmPassword}
+                  onChange={e => setConfirmPassword(e.target.value)}
+                  placeholder={t('login.confirmPasswordPlaceholder')}
+                  className={inputClasses}
+                />
+              </div>
+
+              <button type="submit" disabled={loading || !newPassword || !confirmPassword} className={buttonClasses}>
                 {loading ? t('common.loading') : t('login.setPassword')}
               </button>
             </form>

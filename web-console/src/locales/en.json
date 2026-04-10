@@ -56,6 +56,11 @@
     "setNewPassword": "Set new password",
     "newPasswordRequired": "Your account requires a new password before continuing.",
     "newPassword": "New Password",
+    "passwordPlaceholder": "At least 8 characters",
+    "confirmPassword": "Confirm New Password",
+    "confirmPasswordPlaceholder": "Re-enter new password",
+    "passwordMismatch": "Passwords do not match",
+    "passwordTooShort": "Password must be at least 8 characters",
     "setPassword": "Set Password"
   },
   "dashboard": {
