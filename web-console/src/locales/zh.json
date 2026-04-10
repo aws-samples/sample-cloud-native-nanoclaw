@@ -587,6 +587,7 @@
       "command": "命令",
       "args": "参数",
       "npmPackages": "NPM 包",
+      "npmPackagesHint": "预安装的 npm 包，加速 MCP Server 启动。例如：@amap/amap-maps-mcp-server",
       "url": "URL",
       "headers": "请求头",
       "envVars": "环境变量",

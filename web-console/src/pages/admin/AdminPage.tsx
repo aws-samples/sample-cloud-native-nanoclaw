@@ -882,7 +882,8 @@ function McpServersTab() {
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">{t('admin.mcpServers.npmPackages')}</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-0.5">{t('admin.mcpServers.npmPackages')}</label>
+                  <p className="text-xs text-slate-500 mb-1.5">{t('admin.mcpServers.npmPackagesHint')}</p>
                   <div className="flex flex-wrap gap-1.5 mb-2">
                     {npmPackages.map((pkg, i) => (
                       <span key={i} className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-700">

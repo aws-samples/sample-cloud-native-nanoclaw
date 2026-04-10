@@ -587,6 +587,7 @@
       "command": "Command",
       "args": "Arguments",
       "npmPackages": "NPM Packages",
+      "npmPackagesHint": "Pre-install npm packages to speed up MCP Server startup. e.g. @amap/amap-maps-mcp-server",
       "url": "URL",
       "headers": "Headers",
       "envVars": "Environment Variables",
