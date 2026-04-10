@@ -126,10 +126,11 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(500).send({ error: 'Auth service endpoint not configured' });
       }
       const authHeader = request.headers.authorization || '';
+      const tempPassword = crypto.randomUUID().slice(0, 12) + 'A1!';
       const res = await fetch(`${authEndpoint}/admin/users`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: authHeader },
-        body: JSON.stringify({ email, password: crypto.randomUUID().slice(0, 16) + 'A1!', plan }),
+        body: JSON.stringify({ email, password: tempPassword, plan, forcePasswordChange: true }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -144,7 +145,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         request.log.error({ err, userId: result.userId, email }, 'DDB user record write failed after auth-service creation');
       }
 
-      return { ok: true, userId: result.userId, email: result.email };
+      return { ok: true, userId: result.userId, email: result.email, temporaryPassword: tempPassword };
     }
 
     // AgentCore mode: Cognito

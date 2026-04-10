@@ -277,7 +277,7 @@ export const admin = {
   getPlans: () => request<PlanQuotasConfig>('/admin/plans'),
   updatePlans: (quotas: PlanQuotasConfig) => request<{ ok: boolean }>('/admin/plans', { method: 'PUT', body: JSON.stringify(quotas) }),
   createUser: (email: string, plan?: string) =>
-    request<{ ok: boolean; userId: string; email: string }>('/admin/users', {
+    request<{ ok: boolean; userId: string; email: string; temporaryPassword?: string }>('/admin/users', {
       method: 'POST',
       body: JSON.stringify({ email, plan: plan || 'free' }),
     }),

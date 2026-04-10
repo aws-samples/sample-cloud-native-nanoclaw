@@ -39,6 +39,7 @@ const createUserSchema = z.object({
   password: z.string().min(8),
   plan: z.enum(['free', 'pro', 'enterprise']).default('free'),
   isAdmin: z.boolean().default(false),
+  forcePasswordChange: z.boolean().default(false),
 });
 
 const statusSchema = z.object({
@@ -223,7 +224,7 @@ app.register(async (admin) => {
   });
 
   admin.post('/users', async (request, reply) => {
-    const { email, password, plan, isAdmin } = createUserSchema.parse(request.body);
+    const { email, password, plan, isAdmin, forcePasswordChange } = createUserSchema.parse(request.body);
 
     const existing = await getUserByEmail(email);
     if (existing) {
@@ -233,18 +234,23 @@ app.register(async (admin) => {
     const userId = ulid();
     const passwordHash = await hashPassword(password);
 
+    const item: Record<string, unknown> = {
+      userId,
+      email,
+      passwordHash,
+      plan,
+      status: 'active',
+      isAdmin,
+      createdAt: new Date().toISOString(),
+      botCount: 0,
+    };
+    if (forcePasswordChange) {
+      item.forcePasswordChange = true;
+    }
+
     await ddb.send(new PutCommand({
       TableName: USERS_TABLE,
-      Item: {
-        userId,
-        email,
-        passwordHash,
-        plan,
-        status: 'active',
-        isAdmin,
-        createdAt: new Date().toISOString(),
-        botCount: 0,
-      },
+      Item: item,
     }));
 
     return reply.status(201).send({ ok: true, userId, email });

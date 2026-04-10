@@ -32,7 +32,10 @@ export default function UserList() {
     if (!newEmail.trim()) return;
     setCreating(true);
     try {
-      await admin.createUser(newEmail.trim(), newPlan);
+      const result = await admin.createUser(newEmail.trim(), newPlan);
+      if (result.temporaryPassword) {
+        alert(`User created!\n\nEmail: ${result.email}\nTemporary password: ${result.temporaryPassword}\n\nPlease share this password with the user. They will be required to change it on first login.`);
+      }
       setShowCreate(false);
       setNewEmail('');
       setNewPlan('free');
