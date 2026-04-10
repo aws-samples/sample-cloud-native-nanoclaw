@@ -1466,7 +1466,8 @@ function BotMcpTab({ bot, botId, loadData }: { bot: Bot; botId: string; loadData
               </>
             )}
 
-            {/* Environment Variables */}
+            {/* Environment Variables (stdio only) */}
+            {customType === 'stdio' && (
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">{t('admin.mcpServers.envVars')}</label>
               {customEnvVars.map((ev, i) => (
@@ -1486,6 +1487,7 @@ function BotMcpTab({ bot, botId, loadData }: { bot: Bot; botId: string; loadData
                 {t('admin.mcpServers.addEnvVar')}
               </button>
             </div>
+            )}
 
             {/* Create button */}
             <button onClick={handleSubmitCustom} disabled={saving || !customName.trim()}

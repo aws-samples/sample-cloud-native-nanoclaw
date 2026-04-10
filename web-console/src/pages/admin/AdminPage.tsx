@@ -957,7 +957,8 @@ function McpServersTab() {
               </>
             )}
 
-            {/* Environment Variables */}
+            {/* Environment Variables (stdio only — sse/http don't use env vars) */}
+            {serverType === 'stdio' && (
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">{t('admin.mcpServers.envVars')}</label>
               {envVars.map((ev, i) => (
@@ -977,6 +978,7 @@ function McpServersTab() {
                 {t('admin.mcpServers.addEnvVar')}
               </button>
             </div>
+            )}
 
             {/* Tools */}
             <div>
