@@ -152,11 +152,11 @@ export default function UserDetail() {
         <dl className="grid grid-cols-3 gap-4 text-sm">
           <div>
             <dt className="text-slate-500">{t('admin.userDetail.tokens')}</dt>
-            <dd className="text-2xl font-bold text-slate-900">{user.usageTokens.toLocaleString()}</dd>
+            <dd className="text-2xl font-bold text-slate-900">{(user.usageTokens ?? 0).toLocaleString()}</dd>
           </div>
           <div>
             <dt className="text-slate-500">{t('admin.userDetail.invocations')}</dt>
-            <dd className="text-2xl font-bold text-slate-900">{user.usageInvocations.toLocaleString()}</dd>
+            <dd className="text-2xl font-bold text-slate-900">{(user.usageInvocations ?? 0).toLocaleString()}</dd>
           </div>
           <div>
             <dt className="text-slate-500">{t('admin.userDetail.bots')}</dt>
