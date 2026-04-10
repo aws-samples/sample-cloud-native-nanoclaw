@@ -99,7 +99,7 @@ app.post('/auth/login', async (request, reply) => {
     return reply.status(401).send({ error: 'Invalid email or password' });
   }
   if (user.status === 'suspended' || user.status === 'deleted') {
-    return reply.status(403).send({ error: `Account is ${user.status}` });
+    return reply.status(401).send({ error: `Account is ${user.status}` });
   }
 
   const valid = await verifyPassword(password, user.passwordHash);
@@ -130,7 +130,7 @@ app.post('/auth/refresh', async (request, reply) => {
     const { sub } = await verifyRefreshToken(refreshToken);
     const user = await getUserById(sub);
     if (!user || user.status === 'suspended' || user.status === 'deleted') {
-      return reply.status(403).send({ error: 'Account unavailable' });
+      return reply.status(401).send({ error: 'Account unavailable' });
     }
 
     const groups = user.isAdmin ? ['clawbot-admins'] : [];
@@ -249,7 +249,7 @@ app.register(async (admin) => {
     try {
       const claims = await verifyAccessToken(authHeader.substring(7));
       if (!claims.groups.includes('clawbot-admins')) {
-        return reply.status(403).send({ error: 'Admin access required' });
+        return reply.status(401).send({ error: 'Admin access required' });
       }
     } catch {
       const bootstrapSecret = request.headers['x-bootstrap-secret'];
