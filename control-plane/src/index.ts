@@ -58,7 +58,8 @@ async function main() {
     app.register(async (authProxy) => {
       // Proxy all /auth/* requests to internal auth-service
       authProxy.all('/*', async (request, reply) => {
-        const targetUrl = `${config.auth.endpoint}/auth${request.url}`;
+        // request.url is the full original URL (e.g. /auth/login), forward as-is
+        const targetUrl = `${config.auth.endpoint}${request.url}`;
         const headers: Record<string, string> = {};
         if (request.headers['content-type']) {
           headers['content-type'] = request.headers['content-type'] as string;
