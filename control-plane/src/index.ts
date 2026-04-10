@@ -21,7 +21,10 @@ import { TelegramAdapter } from './adapters/telegram/index.js';
 import { FeishuAdapter } from './adapters/feishu/index.js';
 import { DingTalkAdapter } from './adapters/dingtalk/index.js';
 
-const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  timestamp: pino.stdTimeFunctions.isoTime,
+});
 
 async function main() {
   await resolveConfig();

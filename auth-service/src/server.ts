@@ -78,7 +78,12 @@ async function getUserById(userId: string): Promise<AuthUser | null> {
 
 // ── Fastify app ──────────────────────────────────────────────────────────
 
-const app = Fastify({ logger: { level: logLevel } });
+const app = Fastify({
+  logger: {
+    level: logLevel,
+    timestamp: () => `,"time":"${new Date().toISOString()}"`,
+  },
+});
 const logger = app.log;
 
 app.get('/auth/.well-known/jwks.json', async () => getJwks());

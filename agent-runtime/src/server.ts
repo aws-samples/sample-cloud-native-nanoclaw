@@ -15,7 +15,10 @@ import { sendFinalReply, sendErrorReply } from './mcp-tools.js';
 import type { InvocationPayload } from '@clawbot/shared';
 import { formatOutbound } from '@clawbot/shared/text-utils';
 
-const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  timestamp: pino.stdTimeFunctions.isoTime,
+});
 const port = Number(process.env.PORT) || 8080;
 
 const app = Fastify({ loggerInstance: logger });
