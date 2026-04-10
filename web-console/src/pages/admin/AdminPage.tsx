@@ -744,8 +744,8 @@ function McpServersTab() {
     setDescription(server.description || '');
     setVersion(server.version || '1.0.0');
     setCommand(server.command || '');
-    setArgs(server.args || []);
-    setNpmPackages(server.npmPackages || []);
+    setArgs(server.args || []); setNewArg('');
+    setNpmPackages(server.npmPackages || []); setNewPackage('');
     setUrl(server.url || '');
     setHeaders(server.headers ? Object.entries(server.headers).map(([key, value]) => ({ key, value })) : []);
     setEnvVars((server.envVars || []).map((ev) => ({ name: ev.name, template: ev.template || '' })));
