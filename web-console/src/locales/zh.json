@@ -47,7 +47,7 @@
     "tagline": "基于 AWS 的多租户 AI 助手平台",
     "email": "邮箱",
     "password": "密码",
-    "rememberPassword": "记住密码",
+    "rememberPassword": "记住邮箱",
     "signIn": "登录",
     "register": "注册",
     "alreadyHaveAccount": "已有账户？",

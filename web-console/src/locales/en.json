@@ -47,7 +47,7 @@
     "tagline": "Multi-tenant AI assistant platform on AWS",
     "email": "Email",
     "password": "Password",
-    "rememberPassword": "Remember password",
+    "rememberPassword": "Remember email",
     "signIn": "Sign in",
     "register": "Register",
     "alreadyHaveAccount": "Already have an account?",
