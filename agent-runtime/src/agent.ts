@@ -278,6 +278,20 @@ async function _handleInvocation(
   // Ensure reference files available
   copyIfMissing(TEMPLATES, 'CODING_REFERENCE.md', '/workspace/reference');
 
+  // 3b. Ensure settings.json exists (may be lost after session sync/reset)
+  const SETTINGS_PATH = '/home/node/.claude/settings.json';
+  if (!fs.existsSync(SETTINGS_PATH)) {
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify({
+      permissions: {
+        allow: [
+          'Edit(/home/node/.claude/*)',
+          'Write(/home/node/.claude/*)',
+        ],
+      },
+    }, null, 2));
+    logger.info('Wrote settings.json with pre-authorized permissions');
+  }
+
   // 4. Build append content (managed policy + identity + channel + runtime)
   const appendContent = buildAppendContent({
     botId,

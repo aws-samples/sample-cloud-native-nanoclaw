@@ -169,12 +169,17 @@ export async function syncMemoryOnlyFromS3(
 /** Directory names that should never be synced to/from S3. */
 const EXCLUDED_DIRS = new Set(['.git', 'node_modules', '.venv', '__pycache__']);
 
+/** Files that should never be synced to/from S3 (managed at runtime, not persisted). */
+const EXCLUDED_FILES = new Set(['settings.json']);
+
 /**
- * Check if a relative path contains an excluded directory segment.
- * e.g. "foo/.git/objects/pack.idx" → true, "foo/bar.txt" → false
+ * Check if a relative path contains an excluded directory segment or excluded file.
+ * e.g. "foo/.git/objects/pack.idx" → true, "settings.json" → true, "foo/bar.txt" → false
  */
 function isExcludedPath(relPath: string): boolean {
-  return relPath.split('/').some((seg) => EXCLUDED_DIRS.has(seg));
+  const segments = relPath.split('/');
+  if (EXCLUDED_FILES.has(segments[segments.length - 1])) return true;
+  return segments.some((seg) => EXCLUDED_DIRS.has(seg));
 }
 
 async function deleteS3Object(
