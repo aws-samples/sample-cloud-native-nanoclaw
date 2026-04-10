@@ -263,7 +263,7 @@ app.register(async (admin) => {
     const { email, password, plan, isAdmin, forcePasswordChange } = createUserSchema.parse(request.body);
 
     const existing = await getUserByEmail(email);
-    if (existing) {
+    if (existing && existing.status !== 'deleted') {
       return reply.status(409).send({ error: 'User already exists' });
     }
 

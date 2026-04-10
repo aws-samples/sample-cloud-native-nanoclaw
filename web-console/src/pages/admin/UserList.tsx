@@ -40,8 +40,9 @@ export default function UserList() {
       setNewEmail('');
       setNewPlan('free');
       loadUsers();
-    } catch (err) {
-      console.error('Failed to create user:', err);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to create user';
+      alert(message);
     } finally {
       setCreating(false);
     }
