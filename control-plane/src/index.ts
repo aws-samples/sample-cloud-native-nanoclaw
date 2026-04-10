@@ -53,6 +53,34 @@ async function main() {
   await app.register(webhookRoutes, { prefix: '/webhook' });
   await app.register(apiRoutes, { prefix: '/api' });
 
+  // ECS mode: proxy /auth/* requests to internal auth-service ALB
+  if (config.agentMode === 'ecs' && config.auth.endpoint) {
+    app.all('/auth/*', async (request, reply) => {
+      const targetUrl = `${config.auth.endpoint}${request.url}`;
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      if (request.headers.authorization) {
+        headers.authorization = request.headers.authorization;
+      }
+      if (request.headers['x-bootstrap-secret']) {
+        headers['x-bootstrap-secret'] = request.headers['x-bootstrap-secret'] as string;
+      }
+      try {
+        const res = await fetch(targetUrl, {
+          method: request.method,
+          headers,
+          body: request.method !== 'GET' && request.method !== 'HEAD' ? JSON.stringify(request.body) : undefined,
+          signal: AbortSignal.timeout(10_000),
+        });
+        const body = await res.text();
+        return reply.status(res.status).header('content-type', res.headers.get('content-type') || 'application/json').send(body);
+      } catch (err) {
+        logger.error({ err, targetUrl }, 'Auth proxy failed');
+        return reply.status(502).send({ error: 'Auth service unavailable' });
+      }
+    });
+    logger.info({ authEndpoint: config.auth.endpoint }, 'Auth proxy enabled for /auth/*');
+  }
+
   // Start background SQS consumers
   startSqsConsumer(logger);
   startReplyConsumer(logger);
