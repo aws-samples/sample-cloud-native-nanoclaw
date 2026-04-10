@@ -414,6 +414,7 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
 
   let newSessionId: string | undefined;
   let lastResult: string | null = null;
+  let lastAssistantText: string | null = null; // Track last non-empty text from assistant
   let messageCount = 0;
   let resultCount = 0;
   let tokensUsed = 0;
@@ -555,6 +556,11 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
           const content = msg?.content as Array<{ type: string; name?: string; id?: string; text?: string }> | undefined;
           const toolUses = content?.filter((b) => b.type === 'tool_use').map((b) => b.name) || [];
           const textBlocks = content?.filter((b) => b.type === 'text').map((b) => (b.text || '').slice(0, 200)) || [];
+          // Track last non-empty assistant text for fallback when SDK result is empty
+          const fullText = content?.filter((b) => b.type === 'text').map((b) => b.text || '').join('\n').trim();
+          if (fullText) {
+            lastAssistantText = fullText;
+          }
           logger.info(
             {
               model: msg?.model,
@@ -628,9 +634,13 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
     'Agent query completed',
   );
 
+  // Use lastAssistantText as fallback when SDK result is empty
+  // (happens when the final turn is a tool call, not text)
+  const finalResult = lastResult || lastAssistantText;
+
   return {
     status: 'success',
-    result: lastResult,
+    result: finalResult,
     newSessionId,
     tokensUsed: tokensUsed || undefined,
   };
