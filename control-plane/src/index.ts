@@ -13,6 +13,7 @@ import { apiRoutes } from './routes/api/index.js';
 import { webhookRoutes } from './webhooks/index.js';
 import { startSqsConsumer, stopSqsConsumer } from './sqs/consumer.js';
 import { startReplyConsumer, stopReplyConsumer } from './sqs/reply-consumer.js';
+import { startTaskManager, stopTaskManager } from './sqs/task-manager.js';
 import { startHealthCheckLoop, stopHealthCheckLoop } from './services/health-checker.js';
 import { initRegistry } from './adapters/registry.js';
 import { DiscordAdapter } from './adapters/discord/index.js';
@@ -90,6 +91,7 @@ async function main() {
 
   // Start background SQS consumers
   startSqsConsumer(logger);
+  startTaskManager(logger);
   startReplyConsumer(logger);
 
   // Start periodic channel health checks
@@ -113,6 +115,8 @@ async function main() {
     stopHealthCheckLoop();
     // Stop adapters first (releases Feishu leader lock, disconnects gateways)
     await registry.stopAll();
+    // Stop task manager before draining SQS consumer
+    stopTaskManager();
     // Drain SQS consumer: wait for in-flight dispatches, release stuck messages
     await stopSqsConsumer();
     await app.close();
