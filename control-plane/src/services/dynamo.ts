@@ -1000,40 +1000,43 @@ export async function claimWarmTask(): Promise<{
   taskArn: string;
   taskIp: string;
 } | null> {
-  // Find one warm task
-  const query = await client.send(
-    new QueryCommand({
-      TableName: config.tables.sessions,
-      KeyConditionExpression: 'pk = :pk',
-      FilterExpression: 'taskStatus = :warm',
-      ExpressionAttributeValues: { ':pk': 'warm', ':warm': 'warm' },
-      Limit: 1,
-    }),
-  );
-
-  const item = query.Items?.[0];
-  if (!item) return null;
-
-  // Atomically delete — only succeeds if still warm (prevents double-claim)
-  try {
-    await client.send(
-      new DeleteCommand({
+  // Retry up to 3 times to handle race conditions across replicas
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const query = await client.send(
+      new QueryCommand({
         TableName: config.tables.sessions,
-        Key: { pk: 'warm', sk: item.sk as string },
-        ConditionExpression: 'taskStatus = :warm',
-        ExpressionAttributeValues: { ':warm': 'warm' },
+        KeyConditionExpression: 'pk = :pk',
+        FilterExpression: 'taskStatus = :warm',
+        ExpressionAttributeValues: { ':pk': 'warm', ':warm': 'warm' },
+        Limit: 1,
       }),
     );
-    return { taskArn: item.sk as string, taskIp: item.taskIp as string };
-  } catch (err: unknown) {
-    if (
-      err instanceof Error &&
-      err.name === 'ConditionalCheckFailedException'
-    ) {
-      return null;
+
+    const item = query.Items?.[0];
+    if (!item) return null; // No warm tasks at all
+
+    // Atomically delete — only succeeds if still warm (prevents double-claim)
+    try {
+      await client.send(
+        new DeleteCommand({
+          TableName: config.tables.sessions,
+          Key: { pk: 'warm', sk: item.sk as string },
+          ConditionExpression: 'taskStatus = :warm',
+          ExpressionAttributeValues: { ':warm': 'warm' },
+        }),
+      );
+      return { taskArn: item.sk as string, taskIp: item.taskIp as string };
+    } catch (err: unknown) {
+      if (
+        err instanceof Error &&
+        err.name === 'ConditionalCheckFailedException'
+      ) {
+        continue; // Another replica claimed it — retry with next warm task
+      }
+      throw err;
     }
-    throw err;
   }
+  return null; // All attempts raced away
 }
 
 /** Count the number of warm (unassigned) tasks. */
@@ -1087,12 +1090,14 @@ export async function assignTaskToSession(
       TableName: config.tables.sessions,
       Key: { pk, sk: 'current' },
       UpdateExpression:
-        'SET taskArn = :arn, taskIp = :ip, taskStatus = :status, lastInvocationAt = :now',
+        'SET taskArn = :arn, taskIp = :ip, taskStatus = :status, lastInvocationAt = :now, botId = :bid, groupJid = :gid',
       ExpressionAttributeValues: {
         ':arn': taskArn,
         ':ip': taskIp,
         ':status': 'running',
         ':now': new Date().toISOString(),
+        ':bid': botId,
+        ':gid': groupJid,
       },
     }),
   );
@@ -1149,20 +1154,30 @@ export async function scanIdleSessionTasks(
     Date.now() - idleMinutes * 60 * 1000,
   ).toISOString();
 
-  const result = await client.send(
-    new ScanCommand({
-      TableName: config.tables.sessions,
-      FilterExpression:
-        'taskStatus = :running AND lastInvocationAt < :cutoff AND sk = :current',
-      ExpressionAttributeValues: {
-        ':running': 'running',
-        ':cutoff': cutoff,
-        ':current': 'current',
-      },
-    }),
-  );
+  // Paginated scan — handles tables > 1MB
+  // TODO: Add GSI on taskStatus+lastInvocationAt if sessions table grows large
+  const items: Array<Record<string, unknown>> = [];
+  let lastKey: Record<string, unknown> | undefined;
 
-  return (result.Items ?? []).map((item) => ({
+  do {
+    const result = await client.send(
+      new ScanCommand({
+        TableName: config.tables.sessions,
+        FilterExpression:
+          'taskStatus = :running AND lastInvocationAt < :cutoff AND sk = :current',
+        ExpressionAttributeValues: {
+          ':running': 'running',
+          ':cutoff': cutoff,
+          ':current': 'current',
+        },
+        ...(lastKey && { ExclusiveStartKey: lastKey }),
+      }),
+    );
+    if (result.Items) items.push(...result.Items);
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+
+  return items.map((item) => ({
     botId: item.botId as string,
     groupJid: item.groupJid as string,
     taskArn: item.taskArn as string,

@@ -110,6 +110,19 @@ export class AgentStack extends cdk.Stack {
       }),
     );
 
+    // ── ECS-only policies ─────────────────────────────────────────────────
+    if (mode === 'ecs') {
+      // DynamoDB — warm task registration (write pk='warm' to sessions table)
+      this.agentBaseRole.addToPolicy(
+        new iam.PolicyStatement({
+          sid: 'DynamoDbWarmTaskRegistration',
+          effect: iam.Effect.ALLOW,
+          actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem'],
+          resources: [tables.sessions.tableArn],
+        }),
+      );
+    }
+
     // ── AgentCore-only policies ─────────────────────────────────────────
     if (mode === 'agentcore') {
       // ECR pull permissions (required by AgentCore to validate and pull container image)
