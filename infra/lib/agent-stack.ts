@@ -7,6 +7,8 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as appscaling from 'aws-cdk-lib/aws-applicationautoscaling';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import type { Construct } from 'constructs';
 
@@ -340,7 +342,7 @@ export class AgentStack extends cdk.Stack {
         securityGroups: [agentSg],
       });
 
-      // Auto-scaling — scale on concurrent requests, not CPU
+      // Auto-scaling — scale on active dispatch groups (custom metric from control-plane)
       // Each agent task handles 1 request at a time (returns 503 when busy)
       const scaling = service.autoScaleTaskCount({
         minCapacity: 2,
@@ -389,24 +391,38 @@ export class AgentStack extends cdk.Stack {
         defaultTargetGroups: [targetGroup],
       });
 
-      // Scale on SQS queue depth — visible messages = backlog needing capacity.
-      // Unlike ALBRequestCountPerTarget (brief HTTP spike for fire-and-forget),
-      // queue depth persists while messages wait, giving the alarm time to trigger.
-      // Messages stay in-flight during dispatch retries (~5 min), so visible count
-      // reflects only genuinely new unprocessed messages.
-      scaling.scaleOnMetric('QueueDepthScaling', {
-        metric: messageQueue.metricApproximateNumberOfMessagesVisible({
-          period: cdk.Duration.minutes(1),
-          statistic: 'Maximum',
-        }),
+      // Scale on ActiveDispatchGroups — custom metric published by control-plane.
+      // Counts unique botId#groupJid groups currently being dispatched or awaiting
+      // agent reply. This directly maps to the number of tasks needed (1:1).
+      // Unlike SQS queue depth (inflated by message count per group), this metric
+      // is exact: 3 active groups = need 3 tasks.
+      // Use Sum statistic: each control-plane replica publishes its own partial
+      // count of active groups. Sum aggregates across all replicas in the period
+      // to get the total active groups across the fleet.
+      const activeGroupsMetric = new cloudwatch.Metric({
+        namespace: 'NanoClawBot',
+        metricName: 'ActiveDispatchGroups',
+        statistic: 'Sum',
+        period: cdk.Duration.minutes(1),
+        dimensionsMap: { Stage: stage },
+      });
+
+      // EXACT_CAPACITY: set desired count directly based on metric value.
+      // Unlike CHANGE_IN_CAPACITY (incremental), this is idempotent:
+      // metric=4 → set to 6, next eval metric still 4 → still 6. Stable.
+      scaling.scaleOnMetric('ActiveGroupsScaling', {
+        metric: activeGroupsMetric,
+        adjustmentType: appscaling.AdjustmentType.EXACT_CAPACITY,
         scalingSteps: [
-          { upper: 0, change: -1 },            // empty queue → scale in by 1
-          { lower: 0, upper: 1, change: 0 },   // 0-1 visible → hold steady
-          { lower: 1, upper: 5, change: +2 },   // 1-5 visible → add 2 tasks
-          { lower: 5, change: +5 },              // 5+ visible → add 5 tasks
+          { upper: 2, change: 2 },              // <2 groups → 2 tasks (min)
+          { lower: 2, upper: 3, change: 0 },    // 2-3 groups → no change
+          { lower: 3, upper: 6, change: 6 },    // 3-6 groups → 6 tasks
+          { lower: 6, upper: 15, change: 15 },  // 6-15 groups → 15 tasks
+          { lower: 15, upper: 30, change: 30 }, // 15-30 groups → 30 tasks
+          { lower: 30, change: 50 },             // 30+ groups → 50 tasks
         ],
         cooldown: cdk.Duration.seconds(120),
-        evaluationPeriods: 3,                    // require 3 consecutive breaches to act
+        evaluationPeriods: 2,
       });
 
       this.agentEndpoint = `http://${alb.loadBalancerDnsName}`;

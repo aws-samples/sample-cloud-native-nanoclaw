@@ -297,6 +297,19 @@ export class ControlPlaneStack extends cdk.Stack {
       );
     }
 
+    // CloudWatch — publish ActiveDispatchGroups metric for agent auto-scaling
+    taskRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        sid: 'CloudWatchPutMetric',
+        effect: iam.Effect.ALLOW,
+        actions: ['cloudwatch:PutMetricData'],
+        resources: ['*'],
+        conditions: {
+          StringEquals: { 'cloudwatch:namespace': 'NanoClawBot' },
+        },
+      }),
+    );
+
     // ── Fargate Service ─────────────────────────────────────────────────
     this.service = new ecs.FargateService(this, 'Service', {
       cluster: this.cluster,
