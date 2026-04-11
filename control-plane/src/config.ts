@@ -87,6 +87,14 @@ export const config = {
   // Concurrency
   maxConcurrentDispatches: Number(process.env.MAX_CONCURRENT_DISPATCHES) || 20,
 
+  // ECS dedicated task mode (ecs mode only)
+  agentCluster: process.env.AGENT_CLUSTER || '',
+  agentTaskDefinition: process.env.AGENT_TASK_DEFINITION || '',
+  agentSubnets: (process.env.AGENT_SUBNETS || '').split(',').filter(Boolean),
+  agentSecurityGroup: process.env.AGENT_SECURITY_GROUP || '',
+  minWarmTasks: Number(process.env.MIN_WARM_TASKS) || 2,
+  idleTimeoutMinutes: Number(process.env.IDLE_TIMEOUT_MINUTES) || 60,
+
   // Cache TTL
   cacheTtlMs: Number(process.env.CACHE_TTL_MS) || 5 * 60 * 1000, // 5 minutes
 } as const;
