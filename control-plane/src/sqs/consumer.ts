@@ -12,7 +12,7 @@ import {
   PutMetricDataCommand,
 } from '@aws-sdk/client-cloudwatch';
 import { config } from '../config.js';
-import { dispatch, AgentBusyError } from './dispatcher.js';
+import { dispatch } from './dispatcher.js';
 import { setPendingDelete, getAllPendingHandles, removePendingDelete } from './pending-deletes.js';
 import type { SqsPayload } from '@clawbot/shared';
 import type { Logger } from 'pino';
@@ -35,21 +35,22 @@ const dispatchingGroups = new Set<string>();
 let metricsInterval: ReturnType<typeof setInterval> | null = null;
 
 async function publishActiveGroupsMetric(): Promise<void> {
-  // Active groups = groups in dispatch/retry + groups awaiting agent reply
-  const pendingGroups = getAllPendingHandles();
-  const allGroups = new Set([...dispatchingGroups, ...pendingGroups.keys()]);
+  // Only count groups currently in the dispatch/retry loop (waiting for a free task).
+  // Exclude pendingDeletes (groups that already have an agent processing).
+  // This metric is capacity-responsive: when new tasks come online, 503 retries
+  // succeed, groups move from dispatchingGroups → pendingDeletes, metric drops.
   try {
     await cw.send(new PutMetricDataCommand({
       Namespace: 'NanoClawBot',
       MetricData: [{
-        MetricName: 'ActiveDispatchGroups',
-        Value: allGroups.size,
+        MetricName: 'WaitingDispatchGroups',
+        Value: dispatchingGroups.size,
         Unit: 'Count',
         Dimensions: [{ Name: 'Stage', Value: config.stage }],
       }],
     }));
   } catch (err) {
-    consumerLogger?.debug({ err }, 'Failed to publish ActiveDispatchGroups metric');
+    consumerLogger?.debug({ err }, 'Failed to publish WaitingDispatchGroups metric');
   }
 }
 
@@ -238,20 +239,7 @@ async function consumeLoop(logger: Logger): Promise<void> {
             }
           })
           .catch((err) => {
-            if (err instanceof AgentBusyError) {
-              // Last resort — internal retries (~5 min) exhausted. Shorten visibility
-              // so message retries from queue. This should rarely happen since auto-scaling
-              // typically adds capacity within the 5-min internal retry window.
-              sqs.send(new ChangeMessageVisibilityCommand({
-                QueueUrl: config.queues.messages,
-                ReceiptHandle: handle,
-                VisibilityTimeout: 60,
-              })).catch(() => {});
-              logger.warn(
-                { messageId: msg.MessageId },
-                'All agent tasks busy after ~5min of retries, message will retry in 60s',
-              );
-            } else {
+            {
               logger.error(
                 { err, messageId: msg.MessageId },
                 'Dispatch failed, message will return to queue after visibility timeout',

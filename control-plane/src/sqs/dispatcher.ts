@@ -29,6 +29,8 @@ import {
   getGroup,
   ensureUser,
   getSession,
+  touchSessionTask,
+  clearSessionTask,
   getTask,
   getRecentMessages,
   checkAndAcquireAgentSlot,
@@ -45,7 +47,7 @@ import type { Bot } from '@clawbot/shared';
 import { getRegistry } from '../adapters/registry.js';
 import type { ReplyContext, ReplyOptions } from '@clawbot/shared/channel-adapter';
 import type { Logger } from 'pino';
-import { isConsumerRunning } from './consumer.js';
+import { assignTaskForSession, isTaskRunning } from './task-manager.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -582,14 +584,6 @@ async function resolveMcpConfigs(bot: Bot): Promise<ResolvedMcpConfig[]> {
 
 // ── Agent Invocation ──────────────────────────────────────────────────────
 
-/** Thrown when all ECS agent tasks are busy (503). Not a real error — message should retry from queue. */
-export class AgentBusyError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'AgentBusyError';
-  }
-}
-
 interface AgentInvoker {
   invoke(payload: InvocationPayload, logger: Logger): Promise<InvocationResult>;
 }
@@ -631,32 +625,47 @@ class AgentCoreInvoker implements AgentInvoker {
   }
 }
 
-class EcsHttpInvoker implements AgentInvoker {
-  // Retry within dispatch for up to ~5 minutes — keeps message in-flight (not visible)
-  // so SQS queue depth reflects actual demand, not retry noise from bouncing messages.
-  // VisibilityTimeout is 600s, so 5 min of internal retries is well within bounds.
-  private static readonly MAX_RETRIES = 20;
-  private static readonly RETRY_DELAY_MS = 15_000; // 15s fixed interval
-  // Network errors use shorter retry with backoff
+class EcsTaskInvoker implements AgentInvoker {
   private static readonly NETWORK_MAX_RETRIES = 3;
   private static readonly NETWORK_RETRY_DELAY_MS = 5_000;
 
   async invoke(payload: InvocationPayload, logger: Logger): Promise<InvocationResult> {
-    const endpoint = config.agentEndpoint;
-    if (!endpoint) {
-      logger.error('Agent endpoint is not configured (AGENT_ENDPOINT)');
-      return { status: 'error', result: null, error: 'Agent endpoint is not configured' };
+    // 1. Look up existing task for this session
+    const session = await getSession(payload.botId, payload.groupJid);
+
+    if (session?.taskStatus === 'running' && session.taskIp) {
+      // 2a. Try dispatch to existing task
+      const result = await this.httpInvoke(session.taskIp, payload, logger);
+      if (result) {
+        await touchSessionTask(payload.botId, payload.groupJid);
+        return result;
+      }
+      // Task gone — clear stale record and reassign
+      logger.warn({ taskArn: session.taskArn, botId: payload.botId }, 'Task unreachable, reassigning');
+      await clearSessionTask(payload.botId, payload.groupJid);
     }
 
-    logger.info(
-      { botId: payload.botId, groupJid: payload.groupJid, promptLength: payload.prompt.length, isScheduledTask: payload.isScheduledTask },
-      'Invoking ECS agent runtime',
-    );
+    // 2b. Assign a new task (warm pool or cold start)
+    const taskIp = await assignTaskForSession(payload.botId, payload.groupJid, logger);
 
-    const url = `${endpoint}/invocations`;
-    let networkFailures = 0;
+    // 3. Dispatch to newly assigned task
+    const result = await this.httpInvoke(taskIp, payload, logger);
+    if (!result) {
+      return { status: 'error', result: null, error: 'Failed to dispatch to newly assigned task' };
+    }
+    await touchSessionTask(payload.botId, payload.groupJid);
+    return result;
+  }
 
-    for (let attempt = 0; attempt < EcsHttpInvoker.MAX_RETRIES; attempt++) {
+  /** HTTP POST to task. Returns null if task is unreachable (for reassignment). */
+  private async httpInvoke(
+    taskIp: string,
+    payload: InvocationPayload,
+    logger: Logger,
+  ): Promise<InvocationResult | null> {
+    const url = `http://${taskIp}:8080/invocations`;
+
+    for (let attempt = 0; attempt < EcsTaskInvoker.NETWORK_MAX_RETRIES; attempt++) {
       try {
         const res = await fetch(url, {
           method: 'POST',
@@ -665,55 +674,29 @@ class EcsHttpInvoker implements AgentInvoker {
           signal: AbortSignal.timeout(30_000),
         });
 
-        // Reset network failure counter on any successful HTTP response (even 503)
-        networkFailures = 0;
-
-        // 503 = agent busy — wait and retry (keeps message in-flight, not visible in SQS)
-        if (res.status === 503) {
-          if (attempt < EcsHttpInvoker.MAX_RETRIES - 1) {
-            // Abort retry loop on shutdown — release message back to queue promptly
-            if (!isConsumerRunning()) {
-              throw new AgentBusyError('Consumer shutting down, aborting busy retry');
-            }
-            logger.info(
-              { attempt: attempt + 1, maxRetries: EcsHttpInvoker.MAX_RETRIES, botId: payload.botId, groupJid: payload.groupJid },
-              'Agent busy (503), waiting for capacity',
-            );
-            await new Promise((r) => setTimeout(r, EcsHttpInvoker.RETRY_DELAY_MS));
-            continue;
-          }
-          // All retries exhausted — throw so consumer can handle as last resort
-          throw new AgentBusyError('All agent tasks are busy after ' + EcsHttpInvoker.MAX_RETRIES + ' retries (~5 min)');
-        }
-
         if (!res.ok) {
           const text = await res.text();
-          logger.error({ status: res.status, body: text }, 'ECS agent invocation returned error');
-          return { status: 'error', result: null, error: `ECS agent returned ${res.status}: ${text}` };
+          logger.error({ status: res.status, body: text }, 'Agent task returned error');
+          return { status: 'error', result: null, error: `Agent task returned ${res.status}: ${text}` };
         }
 
         return { status: 'accepted', result: null };
       } catch (err: unknown) {
-        if (err instanceof AgentBusyError) throw err; // Must propagate to consumer
-        networkFailures++;
-        const message = err instanceof Error ? err.message : String(err);
-        // Network errors — limited retries with backoff (don't wait 5 min for a dead endpoint)
-        if (networkFailures < EcsHttpInvoker.NETWORK_MAX_RETRIES) {
-          logger.warn({ err, networkFailures }, 'ECS agent invocation network error, retrying');
-          await new Promise((r) => setTimeout(r, EcsHttpInvoker.NETWORK_RETRY_DELAY_MS * networkFailures));
+        if (attempt < EcsTaskInvoker.NETWORK_MAX_RETRIES - 1) {
+          logger.warn({ err, attempt: attempt + 1, taskIp }, 'Agent task network error, retrying');
+          await new Promise((r) => setTimeout(r, EcsTaskInvoker.NETWORK_RETRY_DELAY_MS));
           continue;
         }
-        logger.error({ err }, 'ECS agent runtime unreachable after retries');
-        return { status: 'error', result: null, error: `ECS agent invocation failed: ${message}` };
+        logger.error({ err, taskIp }, 'Agent task unreachable after retries');
+        return null; // Signal to caller: task is gone, reassign
       }
     }
-
-    return { status: 'error', result: null, error: 'ECS agent invocation failed: max retries exceeded' };
+    return null;
   }
 }
 
 function createInvoker(): AgentInvoker {
-  if (config.agentMode === 'ecs') return new EcsHttpInvoker();
+  if (config.agentMode === 'ecs') return new EcsTaskInvoker();
   return new AgentCoreInvoker();
 }
 
