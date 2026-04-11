@@ -7,6 +7,7 @@ import {
   ReceiveMessageCommand,
   DeleteMessageCommand,
 } from '@aws-sdk/client-sqs';
+import { getPendingDelete, removePendingDelete } from './pending-deletes.js';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { config } from '../config.js';
 import { getRegistry } from '../adapters/registry.js';
@@ -145,10 +146,30 @@ async function replyLoop(logger: Logger): Promise<void> {
                 textPayload.metadata,
                 logger,
               );
+
+              // Deferred inbound message deletion — when agent sends final reply,
+              // delete the original inbound SQS FIFO message to unblock same-group queue
+              if (textPayload.metadata.isFinalReply || textPayload.metadata.isError) {
+                const key = `${payload.botId}#${payload.groupJid}`;
+                const pendingHandle = getPendingDelete(key);
+                if (pendingHandle) {
+                  try {
+                    await sqs.send(new DeleteMessageCommand({
+                      QueueUrl: config.queues.messages,
+                      ReceiptHandle: pendingHandle,
+                    }));
+                    removePendingDelete(key);
+                    logger.info({ key }, 'Deferred inbound message deleted (agent completed)');
+                  } catch (delErr) {
+                    logger.warn({ key, err: delErr }, 'Failed to delete deferred inbound message (may have expired)');
+                    removePendingDelete(key);
+                  }
+                }
+              }
             }
           }
 
-          // Delete message on success
+          // Delete reply message on success
           await sqs.send(
             new DeleteMessageCommand({
               QueueUrl: config.queues.replies,

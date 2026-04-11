@@ -65,11 +65,17 @@ async function runInBackground(payload: InvocationPayload): Promise<void> {
           ...result,
           result: formatOutbound(result.result),
         });
+      } else {
+        // NO_REPLY: still send completion signal so SQS FIFO unblocks same-group queue
+        await sendFinalReply(payload, { ...result, result: null });
       }
     } else if (result.status === 'error') {
       await sendErrorReply(payload, new Error(result.error || 'Unknown agent error')).catch((e) => {
         logger.error(e, 'Failed to send error notification');
       });
+    } else {
+      // Success with null/empty result: send completion signal to unblock queue
+      await sendFinalReply(payload, { ...result, result: null });
     }
   } catch (error) {
     logger.error(error, 'Background invocation failed');

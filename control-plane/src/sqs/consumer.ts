@@ -9,6 +9,8 @@ import {
 } from '@aws-sdk/client-sqs';
 import { config } from '../config.js';
 import { dispatch } from './dispatcher.js';
+import { setPendingDelete, getAllPendingHandles, removePendingDelete } from './pending-deletes.js';
+import type { SqsPayload } from '@clawbot/shared';
 import type { Logger } from 'pino';
 
 let running = false;
@@ -68,6 +70,27 @@ export async function stopSqsConsumer(timeoutMs = 15_000): Promise<void> {
     );
     await Promise.all(releases);
     logger?.info('In-flight messages released');
+  }
+
+  // Release pending-delete messages (dispatched to agent but not yet completed)
+  const pendingHandles = getAllPendingHandles();
+  if (pendingHandles.size > 0) {
+    logger?.info(
+      { pending: pendingHandles.size },
+      'Releasing pending-delete messages back to queue',
+    );
+    const pendingReleases = [...pendingHandles.entries()].map(([key, handle]) =>
+      sqs.send(
+        new ChangeMessageVisibilityCommand({
+          QueueUrl: config.queues.messages,
+          ReceiptHandle: handle,
+          VisibilityTimeout: 0,
+        }),
+      ).then(() => removePendingDelete(key))
+       .catch(() => { removePendingDelete(key); }),
+    );
+    await Promise.all(pendingReleases);
+    logger?.info('Pending-delete messages released');
   }
 }
 
@@ -148,16 +171,25 @@ async function consumeLoop(logger: Logger): Promise<void> {
         const handle = msg.ReceiptHandle!;
         inFlightHandles.add(handle);
 
-        // Fire-and-forget dispatch with cleanup
+        // Fire-and-forget dispatch — defer SQS delete until agent's final reply
         dispatch(msg, logger)
-          .then(async () => {
-            // Delete message on success
-            await sqs.send(
-              new DeleteMessageCommand({
+          .then(() => {
+            // Don't delete yet — store receipt handle for deferred deletion.
+            // Reply-consumer will delete when it receives isFinalReply/isError.
+            // This ensures SQS FIFO blocks the next same-group message until
+            // the current agent invocation completes.
+            try {
+              const body = JSON.parse(msg.Body!) as SqsPayload;
+              const key = `${body.botId}#${body.groupJid}`;
+              setPendingDelete(key, handle);
+              logger.debug({ key, messageId: msg.MessageId }, 'Deferred SQS delete until agent reply');
+            } catch {
+              // If we can't parse the body, delete immediately to avoid blocking
+              sqs.send(new DeleteMessageCommand({
                 QueueUrl: config.queues.messages,
                 ReceiptHandle: handle,
-              }),
-            );
+              })).catch(() => {});
+            }
           })
           .catch((err) => {
             logger.error(
