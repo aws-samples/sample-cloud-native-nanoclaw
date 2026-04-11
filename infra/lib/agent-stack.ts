@@ -6,9 +6,6 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
-import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
-import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
-import * as appscaling from 'aws-cdk-lib/aws-applicationautoscaling';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import type { Construct } from 'constructs';
 
@@ -29,6 +26,8 @@ export interface AgentStackProps extends cdk.StackProps {
   };
   vpc?: ec2.IVpc;
   ecrRepo?: ecr.IRepository;
+  minWarmTasks?: number;
+  idleTimeoutMinutes?: number;
 }
 
 export class AgentStack extends cdk.Stack {
@@ -309,8 +308,11 @@ export class AgentStack extends cdk.Stack {
           STAGE: stage,
           AWS_REGION: this.region,
           PORT: '8080',
+          AGENT_MODE: 'ecs',
+          IDLE_TIMEOUT_MINUTES: String(props.idleTimeoutMinutes ?? 60),
           SCOPED_ROLE_ARN: this.agentScopedRole.roleArn,
           SESSION_BUCKET: dataBucket.bucketName,
+          SESSIONS_TABLE: tables.sessions.tableName,
           SQS_REPLIES_URL: replyQueue.queueUrl,
           TABLE_TASKS: tables.tasks.tableName,
           SCHEDULER_ROLE_ARN: this.schedulerRole.roleArn,
@@ -333,103 +335,25 @@ export class AgentStack extends cdk.Stack {
         'Allow from VPC on port 8080',
       );
 
-      const service = new ecs.FargateService(this, 'AgentService', {
-        cluster,
-        taskDefinition: agentTaskDef,
-        desiredCount: 2,
-        assignPublicIp: false,
-        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-        securityGroups: [agentSg],
+      // No ALB — control-plane routes directly to task IPs via DynamoDB registry
+      this.agentEndpoint = '';
+
+      // Export infrastructure for control-plane RunTask calls
+      new cdk.CfnOutput(this, 'AgentClusterName', {
+        value: cluster.clusterName,
+        exportName: `nanoclawbot-${stage}-agent-cluster`,
       });
-
-      // Auto-scaling — scale on active dispatch groups (custom metric from control-plane)
-      // Each agent task handles 1 request at a time (returns 503 when busy)
-      const scaling = service.autoScaleTaskCount({
-        minCapacity: 2,
-        maxCapacity: 100,
+      new cdk.CfnOutput(this, 'AgentTaskDefArn', {
+        value: agentTaskDef.taskDefinitionArn,
+        exportName: `nanoclawbot-${stage}-agent-task-def`,
       });
-
-      // Internal ALB
-      const albSg = new ec2.SecurityGroup(this, 'AgentAlbSg', {
-        vpc,
-        description: 'Agent ALB security group',
-        allowAllOutbound: true,
+      new cdk.CfnOutput(this, 'AgentSubnets', {
+        value: vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnetIds.join(','),
+        exportName: `nanoclawbot-${stage}-agent-subnets`,
       });
-      albSg.addIngressRule(
-        ec2.Peer.ipv4(vpc.vpcCidrBlock),
-        ec2.Port.tcp(80),
-        'Allow from VPC on port 80',
-      );
-
-      const alb = new elbv2.ApplicationLoadBalancer(this, 'AgentAlb', {
-        loadBalancerName: `nanoclawbot-${stage}-agent-alb`,
-        vpc,
-        internetFacing: false,
-        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-        securityGroup: albSg,
-      });
-
-      const targetGroup = new elbv2.ApplicationTargetGroup(this, 'AgentTargetGroup', {
-        vpc,
-        port: 8080,
-        protocol: elbv2.ApplicationProtocol.HTTP,
-        targets: [service],
-        // Prefer idle tasks — reduces 503s in single-concurrency model
-        loadBalancingAlgorithmType: elbv2.TargetGroupLoadBalancingAlgorithmType.LEAST_OUTSTANDING_REQUESTS,
-        deregistrationDelay: cdk.Duration.seconds(30),
-        healthCheck: {
-          path: '/ping',
-          interval: cdk.Duration.seconds(30),
-          timeout: cdk.Duration.seconds(5),
-          healthyThresholdCount: 2,
-          unhealthyThresholdCount: 3,
-        },
-      });
-
-      alb.addListener('AgentHttpListener', {
-        port: 80,
-        defaultTargetGroups: [targetGroup],
-      });
-
-      // Scale on ActiveDispatchGroups — custom metric published by control-plane.
-      // Counts unique botId#groupJid groups currently being dispatched or awaiting
-      // agent reply. This directly maps to the number of tasks needed (1:1).
-      // Unlike SQS queue depth (inflated by message count per group), this metric
-      // is exact: 3 active groups = need 3 tasks.
-      // Use Sum statistic: each control-plane replica publishes its own partial
-      // count of active groups. Sum aggregates across all replicas in the period
-      // to get the total active groups across the fleet.
-      const activeGroupsMetric = new cloudwatch.Metric({
-        namespace: 'NanoClawBot',
-        metricName: 'ActiveDispatchGroups',
-        statistic: 'Sum',
-        period: cdk.Duration.minutes(1),
-        dimensionsMap: { Stage: stage },
-      });
-
-      // EXACT_CAPACITY: set desired count directly based on metric value.
-      // Unlike CHANGE_IN_CAPACITY (incremental), this is idempotent:
-      // metric=4 → set to 6, next eval metric still 4 → still 6. Stable.
-      scaling.scaleOnMetric('ActiveGroupsScaling', {
-        metric: activeGroupsMetric,
-        adjustmentType: appscaling.AdjustmentType.EXACT_CAPACITY,
-        scalingSteps: [
-          { upper: 2, change: 2 },              // <2 groups → 2 tasks (min)
-          { lower: 2, upper: 3, change: 0 },    // 2-3 groups → no change
-          { lower: 3, upper: 6, change: 6 },    // 3-6 groups → 6 tasks
-          { lower: 6, upper: 15, change: 15 },  // 6-15 groups → 15 tasks
-          { lower: 15, upper: 30, change: 30 }, // 15-30 groups → 30 tasks
-          { lower: 30, change: 50 },             // 30+ groups → 50 tasks
-        ],
-        cooldown: cdk.Duration.seconds(120),
-        evaluationPeriods: 2,
-      });
-
-      this.agentEndpoint = `http://${alb.loadBalancerDnsName}`;
-
-      new cdk.CfnOutput(this, 'AgentEndpoint', {
-        value: this.agentEndpoint,
-        exportName: `nanoclawbot-${stage}-agent-endpoint`,
+      new cdk.CfnOutput(this, 'AgentSecurityGroup', {
+        value: agentSg.securityGroupId,
+        exportName: `nanoclawbot-${stage}-agent-sg`,
       });
     } else {
       this.agentEndpoint = '';
