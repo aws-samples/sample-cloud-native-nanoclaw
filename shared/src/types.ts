@@ -209,6 +209,11 @@ export interface Session {
   lastModel?: string;
   /** Model provider used in the last invocation */
   lastModelProvider?: ModelProvider;
+  // ECS dedicated task registry (ecs mode only)
+  taskArn?: string;
+  taskIp?: string;
+  taskStatus?: 'warm' | 'running' | 'stopping' | 'stopped';
+  lastInvocationAt?: string;
 }
 
 // --- SQS Message Payloads ---
