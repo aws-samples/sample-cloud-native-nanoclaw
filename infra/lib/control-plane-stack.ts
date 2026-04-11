@@ -44,6 +44,12 @@ export interface ControlPlaneStackProps extends cdk.StackProps {
   authEndpoint: string;
   authJwksUrl: string;
   agentEndpoint: string;
+  agentCluster?: string;
+  agentTaskDefinitionArn?: string;
+  agentSubnets?: string[];
+  agentSecurityGroup?: string;
+  minWarmTasks?: number;
+  idleTimeoutMinutes?: number;
 }
 
 export class ControlPlaneStack extends cdk.Stack {
@@ -170,7 +176,12 @@ export class ControlPlaneStack extends cdk.Stack {
         ...(props.mode === 'ecs' ? {
           AUTH_JWKS_URL: props.authJwksUrl,
           AUTH_ENDPOINT: props.authEndpoint,
-          AGENT_ENDPOINT: props.agentEndpoint,
+          AGENT_CLUSTER: props.agentCluster || '',
+          AGENT_TASK_DEFINITION: props.agentTaskDefinitionArn || '',
+          AGENT_SUBNETS: props.agentSubnets?.join(',') || '',
+          AGENT_SECURITY_GROUP: props.agentSecurityGroup || '',
+          MIN_WARM_TASKS: String(props.minWarmTasks ?? 2),
+          IDLE_TIMEOUT_MINUTES: String(props.idleTimeoutMinutes ?? 60),
         } : {}),
       },
       logging: ecs.LogDrivers.awsLogs({
@@ -258,28 +269,27 @@ export class ControlPlaneStack extends cdk.Stack {
       }),
     );
 
-    // ECS RunTask (scoped to this cluster's tasks)
-    taskRole.addToPrincipalPolicy(
-      new iam.PolicyStatement({
-        sid: 'EcsRunTask',
-        effect: iam.Effect.ALLOW,
-        actions: ['ecs:RunTask', 'ecs:DescribeTasks', 'ecs:StopTask'],
-        resources: [
-          `arn:${this.partition}:ecs:${this.region}:${this.account}:task/${this.cluster.clusterName}/*`,
-          `arn:${this.partition}:ecs:${this.region}:${this.account}:task-definition/nanoclawbot-${stage}-*`,
-        ],
-      }),
-    );
+    // ECS — manage dedicated agent tasks (ecs mode only)
+    if (props.mode === 'ecs') {
+      taskRole.addToPrincipalPolicy(
+        new iam.PolicyStatement({
+          sid: 'EcsManageTasks',
+          effect: iam.Effect.ALLOW,
+          actions: ['ecs:RunTask', 'ecs:StopTask', 'ecs:DescribeTasks'],
+          resources: ['*'],
+        }),
+      );
 
-    // Pass role for agent tasks
-    taskRole.addToPrincipalPolicy(
-      new iam.PolicyStatement({
-        sid: 'PassAgentRole',
-        effect: iam.Effect.ALLOW,
-        actions: ['iam:PassRole'],
-        resources: [props.agentBaseRole.roleArn, taskDef.executionRole!.roleArn],
-      }),
-    );
+      // PassRole for RunTask — needs to pass both task role and execution role
+      taskRole.addToPrincipalPolicy(
+        new iam.PolicyStatement({
+          sid: 'PassAgentRoleForRunTask',
+          effect: iam.Effect.ALLOW,
+          actions: ['iam:PassRole'],
+          resources: [props.agentBaseRole.roleArn, taskDef.executionRole!.roleArn],
+        }),
+      );
+    }
 
     // Cognito — admin user management (agentcore mode only)
     if (props.mode === 'agentcore') {
@@ -296,19 +306,6 @@ export class ControlPlaneStack extends cdk.Stack {
         }),
       );
     }
-
-    // CloudWatch — publish ActiveDispatchGroups metric for agent auto-scaling
-    taskRole.addToPrincipalPolicy(
-      new iam.PolicyStatement({
-        sid: 'CloudWatchPutMetric',
-        effect: iam.Effect.ALLOW,
-        actions: ['cloudwatch:PutMetricData'],
-        resources: ['*'],
-        conditions: {
-          StringEquals: { 'cloudwatch:namespace': 'NanoClawBot' },
-        },
-      }),
-    );
 
     // ── Fargate Service ─────────────────────────────────────────────────
     this.service = new ecs.FargateService(this, 'Service', {

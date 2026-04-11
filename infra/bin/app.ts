@@ -85,6 +85,10 @@ const controlPlane = new ControlPlaneStack(app, `NanoClawBot-${stage}-ControlPla
   authEndpoint: auth.authEndpoint,
   authJwksUrl: auth.authJwksUrl,
   agentEndpoint: agent.agentEndpoint,
+  agentCluster: agent.agentCluster,
+  agentTaskDefinitionArn: agent.agentTaskDefinitionArn,
+  agentSubnets: agent.agentSubnets,
+  agentSecurityGroup: agent.agentSecurityGroup,
 });
 controlPlane.addDependency(foundation);
 controlPlane.addDependency(auth);
