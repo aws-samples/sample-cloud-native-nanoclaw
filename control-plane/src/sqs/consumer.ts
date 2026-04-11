@@ -7,10 +7,6 @@ import {
   DeleteMessageCommand,
   ChangeMessageVisibilityCommand,
 } from '@aws-sdk/client-sqs';
-import {
-  CloudWatchClient,
-  PutMetricDataCommand,
-} from '@aws-sdk/client-cloudwatch';
 import { config } from '../config.js';
 import { dispatch } from './dispatcher.js';
 import { setPendingDelete, getAllPendingHandles, removePendingDelete } from './pending-deletes.js';
@@ -19,40 +15,12 @@ import type { Logger } from 'pino';
 
 let running = false;
 
-/** Check if consumer is still running (used by dispatcher to abort long retries on shutdown) */
-export function isConsumerRunning(): boolean { return running; }
 let consumerLogger: Logger | null = null;
 const sqs = new SQSClient({ region: config.region });
-const cw = new CloudWatchClient({ region: config.region });
 
 // Track in-flight message receipt handles so we can release them on shutdown
 const inFlightHandles = new Set<string>();
 let drainResolve: (() => void) | null = null;
-
-// Track unique groups currently being dispatched (in-flight + pending agent reply)
-// Used for the ActiveDispatchGroups CloudWatch metric that drives agent auto-scaling
-const dispatchingGroups = new Set<string>();
-let metricsInterval: ReturnType<typeof setInterval> | null = null;
-
-async function publishActiveGroupsMetric(): Promise<void> {
-  // Only count groups currently in the dispatch/retry loop (waiting for a free task).
-  // Exclude pendingDeletes (groups that already have an agent processing).
-  // This metric is capacity-responsive: when new tasks come online, 503 retries
-  // succeed, groups move from dispatchingGroups → pendingDeletes, metric drops.
-  try {
-    await cw.send(new PutMetricDataCommand({
-      Namespace: 'NanoClawBot',
-      MetricData: [{
-        MetricName: 'WaitingDispatchGroups',
-        Value: dispatchingGroups.size,
-        Unit: 'Count',
-        Dimensions: [{ Name: 'Stage', Value: config.stage }],
-      }],
-    }));
-  } catch (err) {
-    consumerLogger?.debug({ err }, 'Failed to publish WaitingDispatchGroups metric');
-  }
-}
 
 export function startSqsConsumer(logger: Logger): void {
   if (!config.queues.messages) {
@@ -61,11 +29,6 @@ export function startSqsConsumer(logger: Logger): void {
   }
   running = true;
   consumerLogger = logger;
-  // Publish active groups metric every 60s for agent auto-scaling.
-  // Must match the CloudWatch metric period (1 min) — publishing more often
-  // causes Sum statistic to double-count data points from the same replica.
-  publishActiveGroupsMetric(); // seed immediately
-  metricsInterval = setInterval(() => publishActiveGroupsMetric(), 60_000);
   consumeLoop(logger).catch((err) =>
     logger.error(err, 'SQS consumer crashed'),
   );
@@ -78,9 +41,6 @@ export function startSqsConsumer(logger: Logger): void {
  */
 export async function stopSqsConsumer(timeoutMs = 15_000): Promise<void> {
   running = false;
-  if (metricsInterval) { clearInterval(metricsInterval); metricsInterval = null; }
-  // Publish final zero so scaling alarm sees this replica is shutting down
-  publishActiveGroupsMetric().catch(() => {});
   const logger = consumerLogger;
 
   if (inFlightHandles.size === 0) return;
@@ -212,12 +172,10 @@ async function consumeLoop(logger: Logger): Promise<void> {
         const handle = msg.ReceiptHandle!;
         inFlightHandles.add(handle);
 
-        // Track group for ActiveDispatchGroups metric
         let groupKey: string | null = null;
         try {
           const body = JSON.parse(msg.Body!) as SqsPayload;
           groupKey = `${body.botId}#${body.groupJid}`;
-          dispatchingGroups.add(groupKey);
         } catch { /* parse error handled in .then */ }
 
         // Fire-and-forget dispatch — defer SQS delete until agent's final reply
@@ -238,16 +196,13 @@ async function consumeLoop(logger: Logger): Promise<void> {
               })).catch(() => {});
             }
           })
-          .catch((err) => {
-            {
-              logger.error(
-                { err, messageId: msg.MessageId },
-                'Dispatch failed, message will return to queue after visibility timeout',
-              );
-            }
-          })
+          .catch((err) =>
+            logger.error(
+              { err, messageId: msg.MessageId },
+              'Dispatch failed, message will return to queue after visibility timeout',
+            ),
+          )
           .finally(() => {
-            if (groupKey) dispatchingGroups.delete(groupKey);
             inFlightHandles.delete(handle);
             semaphore.release();
             // Signal drain if shutdown is waiting and all in-flight are done
