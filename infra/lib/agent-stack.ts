@@ -389,12 +389,24 @@ export class AgentStack extends cdk.Stack {
         defaultTargetGroups: [targetGroup],
       });
 
-      // Scale on request count — 1 request per target (single-concurrency model)
-      scaling.scaleOnRequestCount('RequestCountScaling', {
-        requestsPerTarget: 1,
-        targetGroup,
-        scaleInCooldown: cdk.Duration.minutes(30),  // slow scale-in (agent invocations are long)
-        scaleOutCooldown: cdk.Duration.seconds(30),  // fast scale-out on demand
+      // Scale on SQS queue depth — visible messages = backlog needing capacity.
+      // Unlike ALBRequestCountPerTarget (brief HTTP spike for fire-and-forget),
+      // queue depth persists while messages wait, giving the alarm time to trigger.
+      // Messages stay in-flight during dispatch retries (~5 min), so visible count
+      // reflects only genuinely new unprocessed messages.
+      scaling.scaleOnMetric('QueueDepthScaling', {
+        metric: messageQueue.metricApproximateNumberOfMessagesVisible({
+          period: cdk.Duration.minutes(1),
+          statistic: 'Maximum',
+        }),
+        scalingSteps: [
+          { upper: 0, change: -1 },            // empty queue → scale in by 1
+          { lower: 0, upper: 1, change: 0 },   // 0-1 visible → hold steady
+          { lower: 1, upper: 5, change: +2 },   // 1-5 visible → add 2 tasks
+          { lower: 5, change: +5 },              // 5+ visible → add 5 tasks
+        ],
+        cooldown: cdk.Duration.seconds(120),
+        evaluationPeriods: 3,                    // require 3 consecutive breaches to act
       });
 
       this.agentEndpoint = `http://${alb.loadBalancerDnsName}`;

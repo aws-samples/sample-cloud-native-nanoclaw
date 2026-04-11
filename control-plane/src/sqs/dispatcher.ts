@@ -45,6 +45,7 @@ import type { Bot } from '@clawbot/shared';
 import { getRegistry } from '../adapters/registry.js';
 import type { ReplyContext, ReplyOptions } from '@clawbot/shared/channel-adapter';
 import type { Logger } from 'pino';
+import { isConsumerRunning } from './consumer.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -581,6 +582,14 @@ async function resolveMcpConfigs(bot: Bot): Promise<ResolvedMcpConfig[]> {
 
 // ── Agent Invocation ──────────────────────────────────────────────────────
 
+/** Thrown when all ECS agent tasks are busy (503). Not a real error — message should retry from queue. */
+export class AgentBusyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AgentBusyError';
+  }
+}
+
 interface AgentInvoker {
   invoke(payload: InvocationPayload, logger: Logger): Promise<InvocationResult>;
 }
@@ -623,8 +632,14 @@ class AgentCoreInvoker implements AgentInvoker {
 }
 
 class EcsHttpInvoker implements AgentInvoker {
-  private static readonly MAX_RETRIES = 5;
-  private static readonly RETRY_DELAY_MS = 5_000;
+  // Retry within dispatch for up to ~5 minutes — keeps message in-flight (not visible)
+  // so SQS queue depth reflects actual demand, not retry noise from bouncing messages.
+  // VisibilityTimeout is 600s, so 5 min of internal retries is well within bounds.
+  private static readonly MAX_RETRIES = 20;
+  private static readonly RETRY_DELAY_MS = 15_000; // 15s fixed interval
+  // Network errors use shorter retry with backoff
+  private static readonly NETWORK_MAX_RETRIES = 3;
+  private static readonly NETWORK_RETRY_DELAY_MS = 5_000;
 
   async invoke(payload: InvocationPayload, logger: Logger): Promise<InvocationResult> {
     const endpoint = config.agentEndpoint;
@@ -639,6 +654,7 @@ class EcsHttpInvoker implements AgentInvoker {
     );
 
     const url = `${endpoint}/invocations`;
+    let networkFailures = 0;
 
     for (let attempt = 0; attempt < EcsHttpInvoker.MAX_RETRIES; attempt++) {
       try {
@@ -649,14 +665,25 @@ class EcsHttpInvoker implements AgentInvoker {
           signal: AbortSignal.timeout(30_000),
         });
 
-        // 503 = agent busy — retry after delay (wait for current invocation to finish)
-        if (res.status === 503 && attempt < EcsHttpInvoker.MAX_RETRIES - 1) {
-          logger.info(
-            { attempt: attempt + 1, maxRetries: EcsHttpInvoker.MAX_RETRIES, botId: payload.botId },
-            'Agent busy (503), retrying after delay',
-          );
-          await new Promise((r) => setTimeout(r, EcsHttpInvoker.RETRY_DELAY_MS * (attempt + 1)));
-          continue;
+        // Reset network failure counter on any successful HTTP response (even 503)
+        networkFailures = 0;
+
+        // 503 = agent busy — wait and retry (keeps message in-flight, not visible in SQS)
+        if (res.status === 503) {
+          if (attempt < EcsHttpInvoker.MAX_RETRIES - 1) {
+            // Abort retry loop on shutdown — release message back to queue promptly
+            if (!isConsumerRunning()) {
+              throw new AgentBusyError('Consumer shutting down, aborting busy retry');
+            }
+            logger.info(
+              { attempt: attempt + 1, maxRetries: EcsHttpInvoker.MAX_RETRIES, botId: payload.botId, groupJid: payload.groupJid },
+              'Agent busy (503), waiting for capacity',
+            );
+            await new Promise((r) => setTimeout(r, EcsHttpInvoker.RETRY_DELAY_MS));
+            continue;
+          }
+          // All retries exhausted — throw so consumer can handle as last resort
+          throw new AgentBusyError('All agent tasks are busy after ' + EcsHttpInvoker.MAX_RETRIES + ' retries (~5 min)');
         }
 
         if (!res.ok) {
@@ -667,14 +694,16 @@ class EcsHttpInvoker implements AgentInvoker {
 
         return { status: 'accepted', result: null };
       } catch (err: unknown) {
+        if (err instanceof AgentBusyError) throw err; // Must propagate to consumer
+        networkFailures++;
         const message = err instanceof Error ? err.message : String(err);
-        // Network error — retry if attempts remain
-        if (attempt < EcsHttpInvoker.MAX_RETRIES - 1) {
-          logger.warn({ err, attempt: attempt + 1 }, 'ECS agent invocation failed, retrying');
-          await new Promise((r) => setTimeout(r, EcsHttpInvoker.RETRY_DELAY_MS * (attempt + 1)));
+        // Network errors — limited retries with backoff (don't wait 5 min for a dead endpoint)
+        if (networkFailures < EcsHttpInvoker.NETWORK_MAX_RETRIES) {
+          logger.warn({ err, networkFailures }, 'ECS agent invocation network error, retrying');
+          await new Promise((r) => setTimeout(r, EcsHttpInvoker.NETWORK_RETRY_DELAY_MS * networkFailures));
           continue;
         }
-        logger.error({ err }, 'ECS agent runtime invocation failed after all retries');
+        logger.error({ err }, 'ECS agent runtime unreachable after retries');
         return { status: 'error', result: null, error: `ECS agent invocation failed: ${message}` };
       }
     }

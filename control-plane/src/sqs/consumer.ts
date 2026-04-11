@@ -8,12 +8,15 @@ import {
   ChangeMessageVisibilityCommand,
 } from '@aws-sdk/client-sqs';
 import { config } from '../config.js';
-import { dispatch } from './dispatcher.js';
+import { dispatch, AgentBusyError } from './dispatcher.js';
 import { setPendingDelete, getAllPendingHandles, removePendingDelete } from './pending-deletes.js';
 import type { SqsPayload } from '@clawbot/shared';
 import type { Logger } from 'pino';
 
 let running = false;
+
+/** Check if consumer is still running (used by dispatcher to abort long retries on shutdown) */
+export function isConsumerRunning(): boolean { return running; }
 let consumerLogger: Logger | null = null;
 const sqs = new SQSClient({ region: config.region });
 
@@ -192,10 +195,25 @@ async function consumeLoop(logger: Logger): Promise<void> {
             }
           })
           .catch((err) => {
-            logger.error(
-              { err, messageId: msg.MessageId },
-              'Dispatch failed, message will return to queue after visibility timeout',
-            );
+            if (err instanceof AgentBusyError) {
+              // Last resort — internal retries (~5 min) exhausted. Shorten visibility
+              // so message retries from queue. This should rarely happen since auto-scaling
+              // typically adds capacity within the 5-min internal retry window.
+              sqs.send(new ChangeMessageVisibilityCommand({
+                QueueUrl: config.queues.messages,
+                ReceiptHandle: handle,
+                VisibilityTimeout: 60,
+              })).catch(() => {});
+              logger.warn(
+                { messageId: msg.MessageId },
+                'All agent tasks busy after ~5min of retries, message will retry in 60s',
+              );
+            } else {
+              logger.error(
+                { err, messageId: msg.MessageId },
+                'Dispatch failed, message will return to queue after visibility timeout',
+              );
+            }
           })
           .finally(() => {
             inFlightHandles.delete(handle);
