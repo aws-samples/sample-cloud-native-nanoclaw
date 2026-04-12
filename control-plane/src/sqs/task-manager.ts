@@ -179,9 +179,11 @@ async function runAgentTask(logger: Logger): Promise<string> {
 
 /**
  * Replenish the warm pool to maintain `config.minWarmTasks` idle tasks.
- * Uses a DynamoDB distributed lock to prevent multiple control-plane replicas
- * from replenishing simultaneously (which would over-provision).
- * Lock TTL: 60s — if a replica crashes mid-replenish, the lock auto-expires.
+ * Uses a DynamoDB distributed lock with a 120s TTL. The lock is NOT released
+ * after launching — it stays held until TTL expires, giving launched tasks
+ * time to boot and register in DynamoDB (~30-90s). This prevents other
+ * replicas (or the next interval tick) from seeing 0 registered tasks and
+ * over-provisioning.
  */
 async function replenishWarmPool(logger: Logger): Promise<void> {
   const current = await countWarmTasks();
@@ -189,39 +191,30 @@ async function replenishWarmPool(logger: Logger): Promise<void> {
 
   if (deficit <= 0) return;
 
-  // Acquire distributed lock — only one replica replenishes at a time
-  const lockOwner = await acquireReplenishLock(60);
+  // Acquire lock with 120s TTL — covers task boot time (~30-90s)
+  // Lock is intentionally NOT released: it blocks further replenish attempts
+  // until the TTL expires, by which time the launched tasks will have registered.
+  const lockOwner = await acquireReplenishLock(120);
   if (!lockOwner) {
-    logger.debug('Warm pool replenish skipped — another replica holds the lock');
+    logger.debug('Warm pool replenish skipped — lock held (tasks may be booting)');
     return;
   }
 
-  try {
-    // Re-check after acquiring lock (another replica may have just finished)
-    const recheck = await countWarmTasks();
-    const actualDeficit = config.minWarmTasks - recheck;
+  logger.info(
+    { current, target: config.minWarmTasks, deficit },
+    'Replenishing warm pool',
+  );
 
-    if (actualDeficit > 0) {
-      logger.info(
-        { current: recheck, target: config.minWarmTasks, deficit: actualDeficit },
-        'Replenishing warm pool',
-      );
-
-      const launches = Array.from({ length: actualDeficit }, async () => {
-        try {
-          await runAgentTask(logger);
-        } catch (err) {
-          logger.error({ err }, 'Failed to launch warm pool task');
-        }
-      });
-
-      await Promise.allSettled(launches);
+  const launches = Array.from({ length: deficit }, async () => {
+    try {
+      await runAgentTask(logger);
+    } catch (err) {
+      logger.error({ err }, 'Failed to launch warm pool task');
     }
-  } finally {
-    await releaseReplenishLock(lockOwner).catch((err) => {
-      logger.warn({ err }, 'Failed to release replenish lock — will expire via TTL');
-    });
-  }
+  });
+
+  await Promise.allSettled(launches);
+  // Lock stays held — auto-expires after 120s via DynamoDB TTL condition
 }
 
 /**
