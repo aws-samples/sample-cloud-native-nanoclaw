@@ -127,9 +127,11 @@ async function replyLoop(logger: Logger): Promise<void> {
               );
             }
           } else {
-            const formattedText = formatOutbound(payload.text);
-            if (formattedText) {
-              await adapter.sendReply(ctx, formattedText);
+            if (payload.text) {
+              const formattedText = formatOutbound(payload.text);
+              if (formattedText) {
+                await adapter.sendReply(ctx, formattedText);
+              }
             }
           }
 
