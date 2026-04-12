@@ -984,8 +984,9 @@ export async function putSession(session: Session): Promise<void> {
  * from replenishing simultaneously.
  * Returns true if lock acquired, false if another replica holds it.
  */
-export async function acquireReplenishLock(ttlSeconds: number): Promise<boolean> {
+export async function acquireReplenishLock(ttlSeconds: number): Promise<string | null> {
   const now = Math.floor(Date.now() / 1000);
+  const lockOwner = `${process.env.HOSTNAME || 'unknown'}-${Date.now()}`;
   try {
     await client.send(
       new PutCommand({
@@ -994,6 +995,7 @@ export async function acquireReplenishLock(ttlSeconds: number): Promise<boolean>
           pk: 'lock#replenish',
           sk: 'current',
           expiresAt: now + ttlSeconds,
+          lockOwner,
           acquiredAt: new Date().toISOString(),
         },
         // Only succeed if lock doesn't exist or has expired
@@ -1001,23 +1003,29 @@ export async function acquireReplenishLock(ttlSeconds: number): Promise<boolean>
         ExpressionAttributeValues: { ':now': now },
       }),
     );
-    return true;
+    return lockOwner;
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'ConditionalCheckFailedException') {
-      return false; // Another replica holds the lock
+      return null; // Another replica holds the lock
     }
     throw err;
   }
 }
 
-/** Release the replenish lock. */
-export async function releaseReplenishLock(): Promise<void> {
-  await client.send(
-    new DeleteCommand({
-      TableName: config.tables.sessions,
-      Key: { pk: 'lock#replenish', sk: 'current' },
-    }),
-  );
+/** Release the replenish lock — only if we still own it (fencing). */
+export async function releaseReplenishLock(owner: string): Promise<void> {
+  try {
+    await client.send(
+      new DeleteCommand({
+        TableName: config.tables.sessions,
+        Key: { pk: 'lock#replenish', sk: 'current' },
+        ConditionExpression: 'lockOwner = :owner',
+        ExpressionAttributeValues: { ':owner': owner },
+      }),
+    );
+  } catch {
+    // Lock already expired and was re-acquired — safe to ignore
+  }
 }
 
 /** Register a warm (unassigned) ECS task in the sessions table. */

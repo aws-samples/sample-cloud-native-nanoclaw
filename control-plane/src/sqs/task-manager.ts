@@ -190,8 +190,8 @@ async function replenishWarmPool(logger: Logger): Promise<void> {
   if (deficit <= 0) return;
 
   // Acquire distributed lock — only one replica replenishes at a time
-  const lockAcquired = await acquireReplenishLock(60);
-  if (!lockAcquired) {
+  const lockOwner = await acquireReplenishLock(60);
+  if (!lockOwner) {
     logger.debug('Warm pool replenish skipped — another replica holds the lock');
     return;
   }
@@ -200,24 +200,27 @@ async function replenishWarmPool(logger: Logger): Promise<void> {
     // Re-check after acquiring lock (another replica may have just finished)
     const recheck = await countWarmTasks();
     const actualDeficit = config.minWarmTasks - recheck;
-    if (actualDeficit <= 0) return;
 
-    logger.info(
-      { current: recheck, target: config.minWarmTasks, deficit: actualDeficit },
-      'Replenishing warm pool',
-    );
+    if (actualDeficit > 0) {
+      logger.info(
+        { current: recheck, target: config.minWarmTasks, deficit: actualDeficit },
+        'Replenishing warm pool',
+      );
 
-    const launches = Array.from({ length: actualDeficit }, async () => {
-      try {
-        await runAgentTask(logger);
-      } catch (err) {
-        logger.error({ err }, 'Failed to launch warm pool task');
-      }
-    });
+      const launches = Array.from({ length: actualDeficit }, async () => {
+        try {
+          await runAgentTask(logger);
+        } catch (err) {
+          logger.error({ err }, 'Failed to launch warm pool task');
+        }
+      });
 
-    await Promise.allSettled(launches);
+      await Promise.allSettled(launches);
+    }
   } finally {
-    await releaseReplenishLock().catch(() => {});
+    await releaseReplenishLock(lockOwner).catch((err) => {
+      logger.warn({ err }, 'Failed to release replenish lock — will expire via TTL');
+    });
   }
 }
 
