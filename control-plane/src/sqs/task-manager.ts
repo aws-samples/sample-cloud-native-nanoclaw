@@ -6,6 +6,7 @@
 import {
   ECSClient,
   RunTaskCommand,
+  ListTasksCommand,
   DescribeTasksCommand,
   StopTaskCommand,
 } from '@aws-sdk/client-ecs';
@@ -42,7 +43,7 @@ export async function assignTaskForSession(
   groupJid: string,
   logger: Logger,
 ): Promise<string> {
-  // Attempt warm claim first
+  // Attempt warm claim first (claiming a warm task doesn't increase total count)
   const warm = await claimWarmTask();
   if (warm) {
     logger.info(
@@ -53,6 +54,12 @@ export async function assignTaskForSession(
     // Replenish pool in the background (non-blocking)
     replenishWarmPool(logger).catch(() => {});
     return warm.taskIp;
+  }
+
+  // No warm task — check maxTasks before cold-starting
+  const currentCount = await countClusterTasks(logger);
+  if (currentCount >= config.maxTasks) {
+    throw new Error(`Max tasks limit reached (${currentCount}/${config.maxTasks}), cannot start new task`);
   }
 
   // Cold start — launch a new task and wait for it to register
@@ -149,6 +156,22 @@ export function stopTaskManager(): void {
 }
 
 // ── Internal helpers ────────────────────────────────────────────────────────
+
+/** Count running tasks in the agent ECS cluster. */
+async function countClusterTasks(logger: Logger): Promise<number> {
+  try {
+    const res = await ecs.send(
+      new ListTasksCommand({
+        cluster: config.agentCluster,
+        desiredStatus: 'RUNNING',
+      }),
+    );
+    return res.taskArns?.length ?? 0;
+  } catch (err) {
+    logger.warn({ err }, 'Failed to count cluster tasks, assuming 0');
+    return 0;
+  }
+}
 
 /**
  * Launch a single ECS Fargate agent task.

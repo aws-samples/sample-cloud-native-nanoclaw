@@ -93,7 +93,8 @@ export const config = {
   agentSubnets: (process.env.AGENT_SUBNETS || '').split(',').filter(Boolean),
   agentSecurityGroup: process.env.AGENT_SECURITY_GROUP || '',
   minWarmTasks: Number(process.env.MIN_WARM_TASKS) || 2,
-  idleTimeoutMinutes: Number(process.env.IDLE_TIMEOUT_MINUTES) || 60,
+  maxTasks: Number(process.env.MAX_TASKS) || 500,
+  idleTimeoutMinutes: Number(process.env.IDLE_TIMEOUT_MINUTES) || 15,
 
   // Cache TTL
   cacheTtlMs: Number(process.env.CACHE_TTL_MS) || 5 * 60 * 1000, // 5 minutes

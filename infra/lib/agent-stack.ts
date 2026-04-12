@@ -322,7 +322,7 @@ export class AgentStack extends cdk.Stack {
           AWS_REGION: this.region,
           PORT: '8080',
           AGENT_MODE: 'ecs',
-          IDLE_TIMEOUT_MINUTES: String(props.idleTimeoutMinutes ?? 60),
+          IDLE_TIMEOUT_MINUTES: String(props.idleTimeoutMinutes ?? 15),
           SCOPED_ROLE_ARN: this.agentScopedRole.roleArn,
           SESSION_BUCKET: dataBucket.bucketName,
           SESSIONS_TABLE: tables.sessions.tableName,

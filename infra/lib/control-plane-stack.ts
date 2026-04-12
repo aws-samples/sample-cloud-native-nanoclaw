@@ -49,6 +49,7 @@ export interface ControlPlaneStackProps extends cdk.StackProps {
   agentSubnets?: string[];
   agentSecurityGroup?: string;
   minWarmTasks?: number;
+  maxTasks?: number;
   idleTimeoutMinutes?: number;
 }
 
@@ -181,7 +182,8 @@ export class ControlPlaneStack extends cdk.Stack {
           AGENT_SUBNETS: props.agentSubnets?.join(',') || '',
           AGENT_SECURITY_GROUP: props.agentSecurityGroup || '',
           MIN_WARM_TASKS: String(props.minWarmTasks ?? 2),
-          IDLE_TIMEOUT_MINUTES: String(props.idleTimeoutMinutes ?? 60),
+          MAX_TASKS: String(props.maxTasks ?? 500),
+          IDLE_TIMEOUT_MINUTES: String(props.idleTimeoutMinutes ?? 15),
         } : {}),
       },
       logging: ecs.LogDrivers.awsLogs({
