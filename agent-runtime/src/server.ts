@@ -12,6 +12,8 @@ import Fastify from 'fastify';
 import pino from 'pino';
 import { handleInvocation } from './agent.js';
 import { sendFinalReply, sendErrorReply } from './mcp-tools.js';
+import { registerTask } from './task-registration.js';
+import { startIdleMonitor, resetIdleTimer } from './idle-monitor.js';
 import type { InvocationPayload } from '@clawbot/shared';
 import { formatOutbound } from '@clawbot/shared/text-utils';
 
@@ -36,8 +38,9 @@ app.get('/ping', async () => {
 // Agent execution endpoint — async fire-and-forget
 app.post<{ Body: InvocationPayload }>('/invocations', async (request, reply) => {
   const payload = request.body;
-
-  // Reject concurrent requests — single-concurrency per task
+  // Reject concurrent requests — single-concurrency per task in both modes.
+  // SQS FIFO + deferred deletion prevents this in normal operation, but
+  // 503 rejection is a safety net against edge cases (CP restart, receipt expiry).
   if (busy) {
     logger.info({ botId: payload.botId, groupJid: payload.groupJid }, 'Agent busy, rejecting request');
     return reply.status(503).send({ error: 'Agent is busy' });
@@ -45,6 +48,9 @@ app.post<{ Body: InvocationPayload }>('/invocations', async (request, reply) => 
 
   logger.info({ botId: payload.botId, groupJid: payload.groupJid }, 'Invocation received');
   setBusy();
+
+  // Reset idle timer on each invocation (ECS dedicated mode)
+  if (process.env.AGENT_MODE === 'ecs') resetIdleTimer();
 
   // Fire-and-forget: run in background, respond immediately
   runInBackground(payload).catch((err) => {
@@ -87,6 +93,20 @@ async function runInBackground(payload: InvocationPayload): Promise<void> {
   }
 }
 
-app.listen({ port, host: '0.0.0.0' }).then(() => {
-  logger.info(`Agent runtime listening on port ${port}`);
-});
+await app.listen({ port, host: '0.0.0.0' });
+logger.info(`Agent runtime listening on port ${port}`);
+
+// ECS dedicated task mode — register after server is ready
+if (process.env.AGENT_MODE === 'ecs') {
+  try {
+    const meta = await registerTask(logger);
+    logger.info({ taskArn: meta.taskArn }, 'ECS task registered');
+
+    const idleMinutes = Number(process.env.IDLE_TIMEOUT_MINUTES) || 60;
+    startIdleMonitor(logger, idleMinutes, async () => {
+      logger.info('Idle timeout — performing graceful shutdown');
+    });
+  } catch (err) {
+    logger.error(err, 'Failed to register ECS task');
+  }
+}
