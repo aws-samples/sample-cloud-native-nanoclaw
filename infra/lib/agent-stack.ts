@@ -35,14 +35,6 @@ export class AgentStack extends cdk.Stack {
   public readonly agentScopedRole: iam.Role;
   public readonly schedulerRole: iam.Role;
   public readonly agentEndpoint: string;
-  /** ECS-mode only: agent cluster name */
-  public readonly agentCluster?: string;
-  /** ECS-mode only: agent task definition ARN */
-  public readonly agentTaskDefinitionArn?: string;
-  /** ECS-mode only: private subnet IDs for RunTask */
-  public readonly agentSubnets?: string[];
-  /** ECS-mode only: security group ID for RunTask */
-  public readonly agentSecurityGroup?: string;
 
   constructor(scope: Construct, id: string, props: AgentStackProps) {
     super(scope, id, props);
@@ -359,13 +351,7 @@ export class AgentStack extends cdk.Stack {
       // No ALB — control-plane routes directly to task IPs via DynamoDB registry
       this.agentEndpoint = '';
 
-      // Expose ECS resources for control-plane RunTask calls
-      this.agentCluster = cluster.clusterName;
-      this.agentTaskDefinitionArn = agentTaskDef.taskDefinitionArn;
-      this.agentSubnets = vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnetIds;
-      this.agentSecurityGroup = agentSg.securityGroupId;
-
-      // Export infrastructure for control-plane RunTask calls
+      // Export infrastructure for control-plane RunTask calls (read by deploy.sh)
       new cdk.CfnOutput(this, 'AgentClusterName', {
         value: cluster.clusterName,
         exportName: `nanoclawbot-${stage}-agent-cluster`,

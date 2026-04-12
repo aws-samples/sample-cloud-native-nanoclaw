@@ -85,10 +85,9 @@ const controlPlane = new ControlPlaneStack(app, `NanoClawBot-${stage}-ControlPla
   authEndpoint: auth.authEndpoint,
   authJwksUrl: auth.authJwksUrl,
   agentEndpoint: agent.agentEndpoint,
-  agentCluster: agent.agentCluster,
-  agentTaskDefinitionArn: agent.agentTaskDefinitionArn,
-  agentSubnets: agent.agentSubnets,
-  agentSecurityGroup: agent.agentSecurityGroup,
+  // ECS dedicated task values — NOT passed as cross-stack refs to avoid
+  // circular dependency during migration. deploy.sh reads CDK outputs
+  // and updates the ECS task definition after both stacks are deployed.
 });
 controlPlane.addDependency(foundation);
 controlPlane.addDependency(auth);
