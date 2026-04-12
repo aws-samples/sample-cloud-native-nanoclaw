@@ -178,34 +178,21 @@ async function consumeLoop(logger: Logger): Promise<void> {
           groupKey = `${body.botId}#${body.groupJid}`;
         } catch { /* parse error handled in .then */ }
 
-        // Fire-and-forget dispatch
+        // Fire-and-forget dispatch — defer SQS delete until agent's final reply.
+        // FIFO ordering ensures same-group messages are processed sequentially.
+        // This is critical in BOTH modes:
+        // - AgentCore: prevents dispatching to different microVMs simultaneously
+        // - ECS dedicated task: prevents assigning multiple tasks to same session
         dispatch(msg, logger)
           .then(() => {
-            if (config.agentMode === 'ecs') {
-              // ECS dedicated task mode: delete immediately after dispatch.
-              // Each session has its own task — no need to block same-group
-              // messages via FIFO deferred deletion. Immediate delete prevents:
-              // - Queue stall if reply consumer crashes
-              // - Duplicate delivery if control-plane restarts (pendingDeletes lost)
-              // - 600s receipt handle expiry causing re-delivery
+            if (groupKey) {
+              setPendingDelete(groupKey, handle);
+              logger.debug({ key: groupKey, messageId: msg.MessageId }, 'Deferred SQS delete until agent reply');
+            } else {
               sqs.send(new DeleteMessageCommand({
                 QueueUrl: config.queues.messages,
                 ReceiptHandle: handle,
               })).catch(() => {});
-            } else {
-              // AgentCore mode: defer SQS delete until agent's final reply.
-              // Reply-consumer will delete when it receives isFinalReply/isError.
-              // This ensures SQS FIFO blocks the next same-group message until
-              // the current agent invocation completes.
-              if (groupKey) {
-                setPendingDelete(groupKey, handle);
-                logger.debug({ key: groupKey, messageId: msg.MessageId }, 'Deferred SQS delete until agent reply');
-              } else {
-                sqs.send(new DeleteMessageCommand({
-                  QueueUrl: config.queues.messages,
-                  ReceiptHandle: handle,
-                })).catch(() => {});
-              }
             }
           })
           .catch((err) =>
