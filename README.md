@@ -1,5 +1,7 @@
 <div align="center">
 
+**[English](./README.md) | [中文](./README.zh-CN.md)**
+
 <!-- Logo / Title -->
 <h1>
   <img src="https://img.shields.io/badge/☁️-NanoClaw_on_Cloud-4A90D9?style=for-the-badge&labelColor=1a1a2e" alt="NanoClaw on Cloud" />
@@ -23,13 +25,12 @@
 <!-- Quick Links -->
 <table>
   <tr>
-    <td align="center"><a href="./docs/nanoclaw-architecture.pptx"><strong>📊 Architecture PPT</strong></a><br/><sub>System overview slides</sub></td>
     <td align="center"><a href="./docs/CLOUD_ARCHITECTURE.md"><strong>📐 Architecture Doc</strong></a><br/><sub>Full design details</sub></td>
     <td align="center"><a href="#deployment"><strong>🚀 Deploy Guide</strong></a><br/><sub>One-command deploy</sub></td>
     <td align="center"><a href="#local-development"><strong>💻 Local Dev</strong></a><br/><sub>Dev setup</sub></td>
+    <td align="center"><a href="#message-flow"><strong>📨 Message Flow</strong></a><br/><sub>End-to-end walkthrough</sub></td>
   </tr>
   <tr>
-    <td align="center"><a href="#message-flow"><strong>📨 Message Flow</strong></a><br/><sub>End-to-end walkthrough</sub></td>
     <td align="center"><a href="#security"><strong>🔒 Security</strong></a><br/><sub>Auth & isolation</sub></td>
     <td align="center"><a href="#packages"><strong>📦 Packages</strong></a><br/><sub>Monorepo structure</sub></td>
     <td align="center"><a href="./docs/TODO.md"><strong>📋 TODO</strong></a><br/><sub>Roadmap & backlog</sub></td>
@@ -83,7 +84,7 @@ Auth: Cognito User Pool (JWT)
 Security: WAF │ ABAC via STS SessionTags │ Per-tenant S3/DynamoDB isolation
 ```
 
-> **Deployment modes:** The diagram above shows the default `agentcore` mode. In `ecs` mode (for AWS China regions), AgentCore is replaced by an ECS Fargate agent service, Cognito is replaced by a self-hosted OIDC auth service, and Bedrock is replaced by Anthropic API. See [ECS Mode](#ecs-mode-china-regions) below.
+> **Deployment modes:** The diagram above shows the default `agentcore` mode. In `ecs` mode (for AWS China regions), AgentCore microVMs are replaced by ECS Fargate dedicated tasks (one per botId#groupJid session, with a warm pool for instant dispatch), Cognito is replaced by a self-hosted OIDC auth service, and Bedrock is replaced by Anthropic API. See [ECS Mode](#ecs-mode-china-regions) below.
 
 ```mermaid
 graph TB
@@ -150,7 +151,7 @@ graph TB
 | Tenant model | One user, many Bots | Per-scenario isolation |
 | Channel credentials | BYOK (Bring Your Own Key) | User controls their bots |
 | Control plane | ECS Fargate (always-on) | No 15-min Lambda timeout |
-| Agent runtime | AgentCore (microVM) / ECS Fargate (China) | Per-session isolation (global) / shared service with ABAC (China) |
+| Agent runtime | AgentCore (microVM) / ECS Fargate (China) | Per-session isolation (global) / dedicated task per session with ABAC (China) |
 | Agent SDK | Claude Agent SDK + Bedrock / Anthropic API | Configurable via AGENT_MODE |
 | Message queue | SQS FIFO | Per-group ordering, cross-group parallelism |
 | Database | DynamoDB | Serverless, millisecond latency |
@@ -201,7 +202,8 @@ DEPLOY_MODE=ecs ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD=SecurePass123! ./sc
 
 # ECS mode uses:
 # - Self-hosted OIDC auth service (replaces Cognito)
-# - ECS Fargate agent service (replaces AgentCore microVMs)
+# - ECS Fargate dedicated task per session (replaces AgentCore microVMs)
+#   Each botId#groupJid gets its own Fargate task with warm pool for instant dispatch
 # - Anthropic API (replaces Bedrock) — requires per-user API keys
 ```
 
@@ -212,6 +214,18 @@ DEPLOY_MODE=ecs ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD=SecurePass123! ./sc
 | `ADMIN_PASSWORD` | Yes | — | Password for the initial admin account |
 | `CDK_STAGE` | No | `dev` | Deployment stage name |
 | `AWS_REGION` | No | `us-west-2` | Target AWS region (use `cn-northwest-1` or `cn-north-1` for China) |
+
+#### ECS Mode Parameters (CDK context)
+
+These parameters are passed via CDK context and control the ECS dedicated task model:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `minWarmTasks` | `2` | Number of pre-started idle Fargate tasks kept in warm pool for instant dispatch |
+| `maxTasks` | `500` | Maximum total ECS agent tasks in the cluster |
+| `idleTimeoutMinutes` | `15` | Minutes of inactivity before a dedicated task auto-stops |
+
+The warm pool eliminates cold-start latency (~30-90s) for new sessions. When a message arrives for a new session, the control plane claims a warm task instantly from the pool and replenishes it in the background. If the pool is empty, a cold-start fallback launches a new task. Each session (botId#groupJid) gets its own dedicated Fargate task; tasks self-stop after the idle timeout.
 
 The `DEPLOY_MODE=ecs` flag:
 - Builds and pushes an additional auth-service Docker image
