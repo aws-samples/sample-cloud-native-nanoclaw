@@ -1120,6 +1120,55 @@ export async function countWarmTasks(): Promise<number> {
   return result.Count ?? 0;
 }
 
+/** List all warm task ARNs (for health-check validation). */
+export async function listWarmTaskArns(): Promise<string[]> {
+  const result = await client.send(
+    new QueryCommand({
+      TableName: config.tables.sessions,
+      KeyConditionExpression: 'pk = :pk',
+      FilterExpression: 'taskStatus = :warm',
+      ExpressionAttributeValues: { ':pk': 'warm', ':warm': 'warm' },
+      ProjectionExpression: 'sk',
+    }),
+  );
+  return (result.Items ?? []).map((item) => item.sk as string);
+}
+
+/**
+ * Scan all session records that have a bound task (taskStatus = 'running'),
+ * regardless of idle time. Used for stale-task health checks.
+ */
+export async function scanAllSessionTasks(): Promise<
+  Array<{ botId: string; groupJid: string; taskArn: string }>
+> {
+  const items: Array<Record<string, unknown>> = [];
+  let lastKey: Record<string, unknown> | undefined;
+
+  do {
+    const result = await client.send(
+      new ScanCommand({
+        TableName: config.tables.sessions,
+        FilterExpression:
+          'taskStatus = :running AND sk = :current AND attribute_exists(taskArn)',
+        ExpressionAttributeValues: {
+          ':running': 'running',
+          ':current': 'current',
+        },
+        ProjectionExpression: 'botId, groupJid, taskArn',
+        ...(lastKey && { ExclusiveStartKey: lastKey }),
+      }),
+    );
+    if (result.Items) items.push(...result.Items);
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+
+  return items.map((item) => ({
+    botId: item.botId as string,
+    groupJid: item.groupJid as string,
+    taskArn: item.taskArn as string,
+  }));
+}
+
 /** Remove a warm task record (e.g. when the task is stopped or unhealthy). */
 export async function deleteWarmTask(taskArn: string): Promise<void> {
   await client.send(

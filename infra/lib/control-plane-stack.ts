@@ -271,26 +271,35 @@ export class ControlPlaneStack extends cdk.Stack {
       }),
     );
 
+    // PassRole for agent tasks — kept in both modes to preserve the CDK cross-stack
+    // export from Agent→ControlPlane (removing it requires a two-phase deploy).
+    taskRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        sid: 'PassAgentRole',
+        effect: iam.Effect.ALLOW,
+        actions: ['iam:PassRole'],
+        resources: [props.agentBaseRole.roleArn],
+      }),
+    );
+
     // ECS — manage dedicated agent tasks (ecs mode only)
     if (props.mode === 'ecs') {
       taskRole.addToPrincipalPolicy(
         new iam.PolicyStatement({
           sid: 'EcsManageTasks',
           effect: iam.Effect.ALLOW,
-          actions: ['ecs:RunTask', 'ecs:StopTask', 'ecs:DescribeTasks'],
+          actions: ['ecs:RunTask', 'ecs:StopTask', 'ecs:DescribeTasks', 'ecs:ListTasks'],
           resources: ['*'],
         }),
       );
 
-      // PassRole for RunTask — needs to pass agent task role + agent execution role
+      // PassRole for agent execution role (auto-created by CDK, name not deterministic)
       taskRole.addToPrincipalPolicy(
         new iam.PolicyStatement({
-          sid: 'PassAgentRoleForRunTask',
+          sid: 'PassAgentExecutionRole',
           effect: iam.Effect.ALLOW,
           actions: ['iam:PassRole'],
           resources: [
-            props.agentBaseRole.roleArn,
-            // Agent task definition execution role (auto-created by CDK, name not deterministic)
             `arn:${this.partition}:iam::${this.account}:role/NanoClawBot*AgentTaskDef*`,
           ],
         }),

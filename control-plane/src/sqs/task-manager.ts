@@ -13,14 +13,15 @@ import {
 import { config } from '../config.js';
 import {
   countWarmTasks,
+  listWarmTaskArns,
   deleteWarmTask,
   claimWarmTask,
   getWarmTaskByArn,
   assignTaskToSession,
   clearSessionTask,
   scanIdleSessionTasks,
+  scanAllSessionTasks,
   acquireReplenishLock,
-  releaseReplenishLock,
 } from '../services/dynamo.js';
 import type { Logger } from 'pino';
 
@@ -157,16 +158,23 @@ export function stopTaskManager(): void {
 
 // ── Internal helpers ────────────────────────────────────────────────────────
 
-/** Count running tasks in the agent ECS cluster. */
+/** Count running tasks in the agent ECS cluster (paginated). */
 async function countClusterTasks(logger: Logger): Promise<number> {
   try {
-    const res = await ecs.send(
-      new ListTasksCommand({
-        cluster: config.agentCluster,
-        desiredStatus: 'RUNNING',
-      }),
-    );
-    return res.taskArns?.length ?? 0;
+    let count = 0;
+    let nextToken: string | undefined;
+    do {
+      const res = await ecs.send(
+        new ListTasksCommand({
+          cluster: config.agentCluster,
+          desiredStatus: 'RUNNING',
+          ...(nextToken && { nextToken }),
+        }),
+      );
+      count += res.taskArns?.length ?? 0;
+      nextToken = res.nextToken;
+    } while (nextToken);
+    return count;
   } catch (err) {
     logger.warn({ err }, 'Failed to count cluster tasks, assuming 0');
     return 0;
@@ -204,6 +212,79 @@ async function runAgentTask(logger: Logger): Promise<string> {
   return task.taskArn;
 }
 
+/** Statuses that indicate a task is alive (booting or running). */
+const ALIVE_STATUSES = new Set(['PROVISIONING', 'PENDING', 'ACTIVATING', 'RUNNING']);
+
+/** DescribeTasks accepts at most 100 ARNs per call. */
+const DESCRIBE_BATCH_SIZE = 100;
+
+/**
+ * Call DescribeTasks in batches of 100, return the set of alive task ARNs.
+ */
+async function batchDescribeAliveArns(arns: string[]): Promise<Set<string>> {
+  const alive = new Set<string>();
+  for (let i = 0; i < arns.length; i += DESCRIBE_BATCH_SIZE) {
+    const batch = arns.slice(i, i + DESCRIBE_BATCH_SIZE);
+    const res = await ecs.send(
+      new DescribeTasksCommand({ cluster: config.agentCluster, tasks: batch }),
+    );
+    for (const t of res.tasks ?? []) {
+      if (ALIVE_STATUSES.has(t.lastStatus ?? '')) alive.add(t.taskArn!);
+    }
+  }
+  return alive;
+}
+
+/**
+ * Verify warm task DynamoDB records against ECS — delete entries whose
+ * underlying ECS task is no longer alive (RUNNING/PENDING/PROVISIONING).
+ */
+async function evictStaleWarmTasks(logger: Logger): Promise<void> {
+  const arns = await listWarmTaskArns();
+  if (arns.length === 0) return;
+
+  try {
+    const aliveArns = await batchDescribeAliveArns(arns);
+    const staleArns = arns.filter((a) => !aliveArns.has(a));
+
+    for (const arn of staleArns) {
+      await deleteWarmTask(arn);
+      logger.info({ taskArn: arn }, 'Evicted stale warm task record');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to validate warm pool tasks');
+  }
+}
+
+/**
+ * Verify session-bound task records against ECS — clear bindings whose
+ * underlying ECS task is no longer alive. This catches "ghost" sessions
+ * left behind when tasks stop without updating DynamoDB (e.g. forced stops,
+ * OOM kills, or network partitions during shutdown).
+ */
+async function evictStaleSessionTasks(logger: Logger): Promise<void> {
+  const sessions = await scanAllSessionTasks();
+  if (sessions.length === 0) return;
+
+  const arns = sessions.map((s) => s.taskArn);
+
+  try {
+    const aliveArns = await batchDescribeAliveArns(arns);
+
+    for (const session of sessions) {
+      if (!aliveArns.has(session.taskArn)) {
+        await clearSessionTask(session.botId, session.groupJid);
+        logger.info(
+          { botId: session.botId, groupJid: session.groupJid, taskArn: session.taskArn },
+          'Cleared stale session task binding',
+        );
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Failed to validate session tasks');
+  }
+}
+
 /**
  * Replenish the warm pool to maintain `config.minWarmTasks` idle tasks.
  * Uses a DynamoDB distributed lock with a 120s TTL. The lock is NOT released
@@ -213,26 +294,29 @@ async function runAgentTask(logger: Logger): Promise<string> {
  * over-provisioning.
  */
 async function replenishWarmPool(logger: Logger): Promise<void> {
-  const current = await countWarmTasks();
-  const deficit = config.minWarmTasks - current;
-
-  if (deficit <= 0) return;
-
-  // Acquire lock with 120s TTL — covers task boot time (~30-90s)
-  // Lock is intentionally NOT released: it blocks further replenish attempts
-  // until the TTL expires, by which time the launched tasks will have registered.
+  // Quick check: if warm count already meets target, still need to validate.
+  // Stale records can inflate count, so always evict before making decisions.
+  // Acquire lock first to avoid duplicate DescribeTasks calls across replicas.
   const lockOwner = await acquireReplenishLock(120);
   if (!lockOwner) {
     logger.debug('Warm pool replenish skipped — lock held (tasks may be booting)');
     return;
   }
 
+  // Evict ghost warm records under lock — avoids evicting tasks that are still
+  // booting from a concurrent replenish (lock guarantees single-writer).
+  await evictStaleWarmTasks(logger);
+  const validatedCount = await countWarmTasks();
+
+  const actualDeficit = config.minWarmTasks - validatedCount;
+  if (actualDeficit <= 0) return;
+
   logger.info(
-    { current, target: config.minWarmTasks, deficit },
+    { warmCount: validatedCount, target: config.minWarmTasks, deficit: actualDeficit },
     'Replenishing warm pool',
   );
 
-  const launches = Array.from({ length: deficit }, async () => {
+  const launches = Array.from({ length: actualDeficit }, async () => {
     try {
       await runAgentTask(logger);
     } catch (err) {
@@ -280,9 +364,14 @@ async function pollForTaskRegistration(
 /**
  * Scan for sessions whose dedicated task has been idle beyond the configured
  * timeout, verify the task is still running via ECS DescribeTasks, then stop
- * it and clear the session binding.
+ * it and clear the session binding. Also evicts stale session/warm records
+ * whose ECS tasks have already stopped.
  */
 async function scanAndStopIdleTasks(logger: Logger): Promise<void> {
+  // Evict ghost session records (tasks stopped without DynamoDB cleanup).
+  // Warm pool eviction is handled by replenishWarmPool (every 3 min).
+  await evictStaleSessionTasks(logger);
+
   const idleSessions = await scanIdleSessionTasks(config.idleTimeoutMinutes);
 
   if (idleSessions.length === 0) return;
