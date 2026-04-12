@@ -280,13 +280,17 @@ export class ControlPlaneStack extends cdk.Stack {
         }),
       );
 
-      // PassRole for RunTask — needs to pass both task role and execution role
+      // PassRole for RunTask — needs to pass agent task role + agent execution role
       taskRole.addToPrincipalPolicy(
         new iam.PolicyStatement({
           sid: 'PassAgentRoleForRunTask',
           effect: iam.Effect.ALLOW,
           actions: ['iam:PassRole'],
-          resources: [props.agentBaseRole.roleArn, taskDef.executionRole!.roleArn],
+          resources: [
+            props.agentBaseRole.roleArn,
+            // Agent task definition execution role (auto-created by CDK, name not deterministic)
+            `arn:${this.partition}:iam::${this.account}:role/NanoClawBot*AgentTaskDef*`,
+          ],
         }),
       );
     }
