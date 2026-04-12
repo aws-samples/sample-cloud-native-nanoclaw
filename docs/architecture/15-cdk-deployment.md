@@ -741,6 +741,32 @@ export class AgentStack extends cdk.Stack {
 }
 ```
 
+#### ECS 模式 Agent Stack（独占 task per-session）
+
+ECS 模式下，Agent Stack 不创建 ECS Service 或 ALB。改为按需启动独立 Fargate task，每个 session 独占一个 task。
+
+**与 agentcore 模式的对比：**
+
+| 组件 | agentcore 模式 | ecs 模式 |
+|------|---------------|----------|
+| Agent 运行时 | AgentCore microVM (per-session) | ECS Fargate task (per-session) |
+| 路由 | AgentCore 内部 | DynamoDB task registry → 私有 IP 直连 |
+| 扩缩容 | AgentCore 自管理 | warm pool + ecs:RunTask 按需启动 |
+| 负载均衡 | AgentCore 内部 | 无 ALB，control-plane 直连 task IP |
+| 缩容 | AgentCore 自管理 | task idle 1h 自停 + control-plane 安全网扫描 |
+
+**CDK 输出（ECS 模式）：** `AgentClusterName`, `AgentTaskDefArn`, `AgentSubnets`, `AgentSecurityGroup`
+
+**Task 生命周期：**
+1. Control-plane 调用 `ecs:RunTask` → Fargate task 启动
+2. Task 启动 HTTP server → 从 ECS metadata endpoint 获取 taskArn + privateIp
+3. Task 写入 DynamoDB sessions 表 (`pk='warm', sk=taskArn`) 自注册
+4. Control-plane 从 warm pool 领取 task → 绑定到 session → 通过私有 IP dispatch
+5. Task 处理请求 → idle 超过 `IDLE_TIMEOUT_MINUTES` (默认 60) → `process.exit(0)`
+6. Control-plane 每 10 分钟扫描 idle task，强制 `ecs:StopTask` 清理孤儿
+
+**Control-plane 需要的 IAM 权限：** `ecs:RunTask`, `ecs:StopTask`, `ecs:DescribeTasks`, `iam:PassRole` (task role + execution role)
+
 ### 15.8 Frontend Stack
 
 ```typescript
