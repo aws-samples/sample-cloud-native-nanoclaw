@@ -112,16 +112,20 @@ export function startTaskManager(logger: Logger): void {
     'Starting ECS task manager',
   );
 
-  // Initial replenish
-  replenishWarmPool(logger).catch((err) => {
-    logger.error({ err }, 'Initial warm pool replenish failed');
-  });
+  // Initial replenish (delayed 5s to let other replica start first if simultaneous)
+  setTimeout(() => {
+    replenishWarmPool(logger).catch((err) => {
+      logger.error({ err }, 'Initial warm pool replenish failed');
+    });
+  }, 5_000 + Math.floor(Math.random() * 5_000));
 
+  // Check warm pool every 3 minutes (must be > lock TTL of 120s to avoid
+  // re-triggering while launched tasks are still booting)
   replenishTimer = setInterval(() => {
     replenishWarmPool(logger).catch((err) => {
       logger.error({ err }, 'Warm pool replenish failed');
     });
-  }, 30_000);
+  }, 3 * 60_000);
 
   idleScanTimer = setInterval(() => {
     scanAndStopIdleTasks(logger).catch((err) => {
