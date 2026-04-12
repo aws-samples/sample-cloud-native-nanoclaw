@@ -968,10 +968,27 @@ export async function getSession(
 
 export async function putSession(session: Session): Promise<void> {
   const pk = `${session.botId}#${session.groupJid}`;
+  // Use UpdateCommand to preserve task registry fields (taskArn, taskIp, taskStatus).
+  // PutCommand would overwrite the entire item, clearing fields not in the session object.
   await client.send(
-    new PutCommand({
+    new UpdateCommand({
       TableName: config.tables.sessions,
-      Item: { pk, sk: 'current', ...session },
+      Key: { pk, sk: 'current' },
+      UpdateExpression:
+        'SET botId = :bid, groupJid = :gid, agentcoreSessionId = :sid, s3SessionPath = :sp, lastActiveAt = :la, #st = :status'
+        + (session.lastModel ? ', lastModel = :lm' : '')
+        + (session.lastModelProvider ? ', lastModelProvider = :lmp' : ''),
+      ExpressionAttributeNames: { '#st': 'status' },
+      ExpressionAttributeValues: {
+        ':bid': session.botId,
+        ':gid': session.groupJid,
+        ':sid': session.agentcoreSessionId,
+        ':sp': session.s3SessionPath,
+        ':la': session.lastActiveAt,
+        ':status': session.status,
+        ...(session.lastModel && { ':lm': session.lastModel }),
+        ...(session.lastModelProvider && { ':lmp': session.lastModelProvider }),
+      },
     }),
   );
 }
