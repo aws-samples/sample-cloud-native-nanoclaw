@@ -968,12 +968,306 @@ export async function getSession(
 
 export async function putSession(session: Session): Promise<void> {
   const pk = `${session.botId}#${session.groupJid}`;
+  // Use UpdateCommand to preserve task registry fields (taskArn, taskIp, taskStatus).
+  // PutCommand would overwrite the entire item, clearing fields not in the session object.
+  await client.send(
+    new UpdateCommand({
+      TableName: config.tables.sessions,
+      Key: { pk, sk: 'current' },
+      UpdateExpression:
+        'SET botId = :bid, groupJid = :gid, agentcoreSessionId = :sid, s3SessionPath = :sp, lastActiveAt = :la, #st = :status'
+        + (session.lastModel ? ', lastModel = :lm' : '')
+        + (session.lastModelProvider ? ', lastModelProvider = :lmp' : ''),
+      ExpressionAttributeNames: { '#st': 'status' },
+      ExpressionAttributeValues: {
+        ':bid': session.botId,
+        ':gid': session.groupJid,
+        ':sid': session.agentcoreSessionId,
+        ':sp': session.s3SessionPath,
+        ':la': session.lastActiveAt,
+        ':status': session.status,
+        ...(session.lastModel && { ':lm': session.lastModel }),
+        ...(session.lastModelProvider && { ':lmp': session.lastModelProvider }),
+      },
+    }),
+  );
+}
+
+// ── ECS Dedicated Task Registry ──────────────────────────────────────────
+
+/**
+ * Acquire a distributed lock for warm pool replenish.
+ * Uses DynamoDB conditional put with TTL to prevent multiple replicas
+ * from replenishing simultaneously.
+ * Returns true if lock acquired, false if another replica holds it.
+ */
+export async function acquireReplenishLock(ttlSeconds: number): Promise<string | null> {
+  const now = Math.floor(Date.now() / 1000);
+  const lockOwner = `${process.env.HOSTNAME || 'unknown'}-${Date.now()}`;
+  try {
+    await client.send(
+      new PutCommand({
+        TableName: config.tables.sessions,
+        Item: {
+          pk: 'lock#replenish',
+          sk: 'current',
+          expiresAt: now + ttlSeconds,
+          lockOwner,
+          acquiredAt: new Date().toISOString(),
+        },
+        // Only succeed if lock doesn't exist or has expired
+        ConditionExpression: 'attribute_not_exists(pk) OR expiresAt < :now',
+        ExpressionAttributeValues: { ':now': now },
+      }),
+    );
+    return lockOwner;
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'ConditionalCheckFailedException') {
+      return null; // Another replica holds the lock
+    }
+    throw err;
+  }
+}
+
+/** Release the replenish lock — only if we still own it (fencing). */
+export async function releaseReplenishLock(owner: string): Promise<void> {
+  try {
+    await client.send(
+      new DeleteCommand({
+        TableName: config.tables.sessions,
+        Key: { pk: 'lock#replenish', sk: 'current' },
+        ConditionExpression: 'lockOwner = :owner',
+        ExpressionAttributeValues: { ':owner': owner },
+      }),
+    );
+  } catch {
+    // Lock already expired and was re-acquired — safe to ignore
+  }
+}
+
+/** Register a warm (unassigned) ECS task in the sessions table. */
+export async function putWarmTask(
+  taskArn: string,
+  taskIp: string,
+): Promise<void> {
   await client.send(
     new PutCommand({
       TableName: config.tables.sessions,
-      Item: { pk, sk: 'current', ...session },
+      Item: { pk: 'warm', sk: taskArn, taskIp, taskStatus: 'warm' },
     }),
   );
+}
+
+/**
+ * Atomically claim one warm task.
+ * Uses a conditional delete to prevent double-claim across replicas.
+ * Returns null when no warm task is available or the claim races with another replica.
+ */
+export async function claimWarmTask(): Promise<{
+  taskArn: string;
+  taskIp: string;
+} | null> {
+  // Retry up to 3 times to handle race conditions across replicas
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const query = await client.send(
+      new QueryCommand({
+        TableName: config.tables.sessions,
+        KeyConditionExpression: 'pk = :pk',
+        FilterExpression: 'taskStatus = :warm',
+        ExpressionAttributeValues: { ':pk': 'warm', ':warm': 'warm' },
+        Limit: 1,
+      }),
+    );
+
+    const item = query.Items?.[0];
+    if (!item) return null; // No warm tasks at all
+
+    // Atomically delete — only succeeds if still warm (prevents double-claim)
+    try {
+      await client.send(
+        new DeleteCommand({
+          TableName: config.tables.sessions,
+          Key: { pk: 'warm', sk: item.sk as string },
+          ConditionExpression: 'taskStatus = :warm',
+          ExpressionAttributeValues: { ':warm': 'warm' },
+        }),
+      );
+      return { taskArn: item.sk as string, taskIp: item.taskIp as string };
+    } catch (err: unknown) {
+      if (
+        err instanceof Error &&
+        err.name === 'ConditionalCheckFailedException'
+      ) {
+        continue; // Another replica claimed it — retry with next warm task
+      }
+      throw err;
+    }
+  }
+  return null; // All attempts raced away
+}
+
+/** Count the number of warm (unassigned) tasks. */
+export async function countWarmTasks(): Promise<number> {
+  const result = await client.send(
+    new QueryCommand({
+      TableName: config.tables.sessions,
+      KeyConditionExpression: 'pk = :pk',
+      FilterExpression: 'taskStatus = :warm',
+      ExpressionAttributeValues: { ':pk': 'warm', ':warm': 'warm' },
+      Select: 'COUNT',
+    }),
+  );
+  return result.Count ?? 0;
+}
+
+/** Remove a warm task record (e.g. when the task is stopped or unhealthy). */
+export async function deleteWarmTask(taskArn: string): Promise<void> {
+  await client.send(
+    new DeleteCommand({
+      TableName: config.tables.sessions,
+      Key: { pk: 'warm', sk: taskArn },
+    }),
+  );
+}
+
+/** Look up a warm task by its ARN. */
+export async function getWarmTaskByArn(
+  taskArn: string,
+): Promise<{ taskIp: string } | null> {
+  const result = await client.send(
+    new GetCommand({
+      TableName: config.tables.sessions,
+      Key: { pk: 'warm', sk: taskArn },
+    }),
+  );
+  if (!result.Item) return null;
+  return { taskIp: result.Item.taskIp as string };
+}
+
+/** Assign a claimed ECS task to a session record. */
+export async function assignTaskToSession(
+  botId: string,
+  groupJid: string,
+  taskArn: string,
+  taskIp: string,
+): Promise<void> {
+  const pk = `${botId}#${groupJid}`;
+  await client.send(
+    new UpdateCommand({
+      TableName: config.tables.sessions,
+      Key: { pk, sk: 'current' },
+      UpdateExpression:
+        'SET taskArn = :arn, taskIp = :ip, taskStatus = :status, lastInvocationAt = :now, botId = :bid, groupJid = :gid',
+      ExpressionAttributeValues: {
+        ':arn': taskArn,
+        ':ip': taskIp,
+        ':status': 'running',
+        ':now': new Date().toISOString(),
+        ':bid': botId,
+        ':gid': groupJid,
+      },
+    }),
+  );
+}
+
+/** Bump the last-invocation timestamp and optionally store pending receipt handle. */
+export async function touchSessionTask(
+  botId: string,
+  groupJid: string,
+  pendingReceiptHandle?: string,
+): Promise<void> {
+  const pk = `${botId}#${groupJid}`;
+  await client.send(
+    new UpdateCommand({
+      TableName: config.tables.sessions,
+      Key: { pk, sk: 'current' },
+      UpdateExpression: pendingReceiptHandle
+        ? 'SET lastInvocationAt = :now, pendingReceiptHandle = :handle'
+        : 'SET lastInvocationAt = :now',
+      ExpressionAttributeValues: {
+        ':now': new Date().toISOString(),
+        ...(pendingReceiptHandle && { ':handle': pendingReceiptHandle }),
+      },
+    }),
+  );
+}
+
+/** Clear the pending receipt handle after deferred SQS delete completes. */
+export async function clearPendingHandle(botId: string, groupJid: string): Promise<void> {
+  const pk = `${botId}#${groupJid}`;
+  await client.send(
+    new UpdateCommand({
+      TableName: config.tables.sessions,
+      Key: { pk, sk: 'current' },
+      UpdateExpression: 'REMOVE pendingReceiptHandle',
+    }),
+  );
+}
+
+/** Mark a session's task as stopped and remove task binding fields. */
+export async function clearSessionTask(
+  botId: string,
+  groupJid: string,
+): Promise<void> {
+  const pk = `${botId}#${groupJid}`;
+  await client.send(
+    new UpdateCommand({
+      TableName: config.tables.sessions,
+      Key: { pk, sk: 'current' },
+      UpdateExpression:
+        'SET taskStatus = :stopped REMOVE taskArn, taskIp',
+      ExpressionAttributeValues: { ':stopped': 'stopped' },
+    }),
+  );
+}
+
+/**
+ * Find session-bound tasks that have been idle longer than `idleMinutes`.
+ * Used by the scaler to reclaim/stop idle dedicated tasks.
+ */
+export async function scanIdleSessionTasks(
+  idleMinutes: number,
+): Promise<
+  Array<{
+    botId: string;
+    groupJid: string;
+    taskArn: string;
+    lastInvocationAt: string;
+  }>
+> {
+  const cutoff = new Date(
+    Date.now() - idleMinutes * 60 * 1000,
+  ).toISOString();
+
+  // Paginated scan — handles tables > 1MB
+  // TODO: Add GSI on taskStatus+lastInvocationAt if sessions table grows large
+  const items: Array<Record<string, unknown>> = [];
+  let lastKey: Record<string, unknown> | undefined;
+
+  do {
+    const result = await client.send(
+      new ScanCommand({
+        TableName: config.tables.sessions,
+        FilterExpression:
+          'taskStatus = :running AND lastInvocationAt < :cutoff AND sk = :current',
+        ExpressionAttributeValues: {
+          ':running': 'running',
+          ':cutoff': cutoff,
+          ':current': 'current',
+        },
+        ...(lastKey && { ExclusiveStartKey: lastKey }),
+      }),
+    );
+    if (result.Items) items.push(...result.Items);
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+
+  return items.map((item) => ({
+    botId: item.botId as string,
+    groupJid: item.groupJid as string,
+    taskArn: item.taskArn as string,
+    lastInvocationAt: item.lastInvocationAt as string,
+  }));
 }
 
 // ── Plan Quotas (system config) ─────────────────────────────────────────────

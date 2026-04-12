@@ -6,7 +6,6 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
-import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import type { Construct } from 'constructs';
 
@@ -27,6 +26,8 @@ export interface AgentStackProps extends cdk.StackProps {
   };
   vpc?: ec2.IVpc;
   ecrRepo?: ecr.IRepository;
+  minWarmTasks?: number;
+  idleTimeoutMinutes?: number;
 }
 
 export class AgentStack extends cdk.Stack {
@@ -100,6 +101,19 @@ export class AgentStack extends cdk.Stack {
         ],
       }),
     );
+
+    // ── ECS-only policies ─────────────────────────────────────────────────
+    if (mode === 'ecs') {
+      // DynamoDB — warm task registration (write pk='warm' to sessions table)
+      this.agentBaseRole.addToPolicy(
+        new iam.PolicyStatement({
+          sid: 'DynamoDbWarmTaskRegistration',
+          effect: iam.Effect.ALLOW,
+          actions: ['dynamodb:PutItem', 'dynamodb:UpdateItem'],
+          resources: [tables.sessions.tableArn],
+        }),
+      );
+    }
 
     // ── AgentCore-only policies ─────────────────────────────────────────
     if (mode === 'agentcore') {
@@ -307,8 +321,11 @@ export class AgentStack extends cdk.Stack {
           STAGE: stage,
           AWS_REGION: this.region,
           PORT: '8080',
+          AGENT_MODE: 'ecs',
+          IDLE_TIMEOUT_MINUTES: String(props.idleTimeoutMinutes ?? 15),
           SCOPED_ROLE_ARN: this.agentScopedRole.roleArn,
           SESSION_BUCKET: dataBucket.bucketName,
+          SESSIONS_TABLE: tables.sessions.tableName,
           SQS_REPLIES_URL: replyQueue.queueUrl,
           TABLE_TASKS: tables.tasks.tableName,
           SCHEDULER_ROLE_ARN: this.schedulerRole.roleArn,
@@ -331,89 +348,25 @@ export class AgentStack extends cdk.Stack {
         'Allow from VPC on port 8080',
       );
 
-      const service = new ecs.FargateService(this, 'AgentService', {
-        cluster,
-        taskDefinition: agentTaskDef,
-        desiredCount: 2,
-        assignPublicIp: false,
-        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-        securityGroups: [agentSg],
+      // No ALB — control-plane routes directly to task IPs via DynamoDB registry
+      this.agentEndpoint = '';
+
+      // Export infrastructure for control-plane RunTask calls (read by deploy.sh)
+      new cdk.CfnOutput(this, 'AgentClusterName', {
+        value: cluster.clusterName,
+        exportName: `nanoclawbot-${stage}-agent-cluster`,
       });
-
-      // Auto-scaling — scale on concurrent requests, not CPU
-      // Each agent task handles 1 request at a time (returns 503 when busy)
-      const scaling = service.autoScaleTaskCount({
-        minCapacity: 2,
-        maxCapacity: 100,
+      new cdk.CfnOutput(this, 'AgentTaskDefArn', {
+        value: agentTaskDef.taskDefinitionArn,
+        exportName: `nanoclawbot-${stage}-agent-task-def`,
       });
-
-      // Internal ALB
-      const albSg = new ec2.SecurityGroup(this, 'AgentAlbSg', {
-        vpc,
-        description: 'Agent ALB security group',
-        allowAllOutbound: true,
+      new cdk.CfnOutput(this, 'AgentSubnets', {
+        value: vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnetIds.join(','),
+        exportName: `nanoclawbot-${stage}-agent-subnets`,
       });
-      albSg.addIngressRule(
-        ec2.Peer.ipv4(vpc.vpcCidrBlock),
-        ec2.Port.tcp(80),
-        'Allow from VPC on port 80',
-      );
-
-      const alb = new elbv2.ApplicationLoadBalancer(this, 'AgentAlb', {
-        loadBalancerName: `nanoclawbot-${stage}-agent-alb`,
-        vpc,
-        internetFacing: false,
-        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-        securityGroup: albSg,
-      });
-
-      const targetGroup = new elbv2.ApplicationTargetGroup(this, 'AgentTargetGroup', {
-        vpc,
-        port: 8080,
-        protocol: elbv2.ApplicationProtocol.HTTP,
-        targets: [service],
-        // Prefer idle tasks — reduces 503s in single-concurrency model
-        loadBalancingAlgorithmType: elbv2.TargetGroupLoadBalancingAlgorithmType.LEAST_OUTSTANDING_REQUESTS,
-        deregistrationDelay: cdk.Duration.seconds(30),
-        healthCheck: {
-          path: '/ping',
-          interval: cdk.Duration.seconds(30),
-          timeout: cdk.Duration.seconds(5),
-          healthyThresholdCount: 2,
-          unhealthyThresholdCount: 3,
-        },
-      });
-
-      alb.addListener('AgentHttpListener', {
-        port: 80,
-        defaultTargetGroups: [targetGroup],
-      });
-
-      // Scale on SQS queue depth — visible messages = backlog needing capacity.
-      // Unlike ALBRequestCountPerTarget (brief HTTP spike for fire-and-forget),
-      // queue depth persists while messages wait, giving the alarm time to trigger.
-      // Messages stay in-flight during dispatch retries (~5 min), so visible count
-      // reflects only genuinely new unprocessed messages.
-      scaling.scaleOnMetric('QueueDepthScaling', {
-        metric: messageQueue.metricApproximateNumberOfMessagesVisible({
-          period: cdk.Duration.minutes(1),
-          statistic: 'Maximum',
-        }),
-        scalingSteps: [
-          { upper: 0, change: -1 },            // empty queue → scale in by 1
-          { lower: 0, upper: 1, change: 0 },   // 0-1 visible → hold steady
-          { lower: 1, upper: 5, change: +2 },   // 1-5 visible → add 2 tasks
-          { lower: 5, change: +5 },              // 5+ visible → add 5 tasks
-        ],
-        cooldown: cdk.Duration.seconds(120),
-        evaluationPeriods: 3,                    // require 3 consecutive breaches to act
-      });
-
-      this.agentEndpoint = `http://${alb.loadBalancerDnsName}`;
-
-      new cdk.CfnOutput(this, 'AgentEndpoint', {
-        value: this.agentEndpoint,
-        exportName: `nanoclawbot-${stage}-agent-endpoint`,
+      new cdk.CfnOutput(this, 'AgentSecurityGroup', {
+        value: agentSg.securityGroupId,
+        exportName: `nanoclawbot-${stage}-agent-sg`,
       });
     } else {
       this.agentEndpoint = '';

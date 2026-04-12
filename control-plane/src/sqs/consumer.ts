@@ -8,15 +8,13 @@ import {
   ChangeMessageVisibilityCommand,
 } from '@aws-sdk/client-sqs';
 import { config } from '../config.js';
-import { dispatch, AgentBusyError } from './dispatcher.js';
-import { setPendingDelete, getAllPendingHandles, removePendingDelete } from './pending-deletes.js';
+import { dispatch } from './dispatcher.js';
+import { touchSessionTask } from '../services/dynamo.js';
 import type { SqsPayload } from '@clawbot/shared';
 import type { Logger } from 'pino';
 
 let running = false;
 
-/** Check if consumer is still running (used by dispatcher to abort long retries on shutdown) */
-export function isConsumerRunning(): boolean { return running; }
 let consumerLogger: Logger | null = null;
 const sqs = new SQSClient({ region: config.region });
 
@@ -75,26 +73,8 @@ export async function stopSqsConsumer(timeoutMs = 15_000): Promise<void> {
     logger?.info('In-flight messages released');
   }
 
-  // Release pending-delete messages (dispatched to agent but not yet completed)
-  const pendingHandles = getAllPendingHandles();
-  if (pendingHandles.size > 0) {
-    logger?.info(
-      { pending: pendingHandles.size },
-      'Releasing pending-delete messages back to queue',
-    );
-    const pendingReleases = [...pendingHandles.entries()].map(([key, handle]) =>
-      sqs.send(
-        new ChangeMessageVisibilityCommand({
-          QueueUrl: config.queues.messages,
-          ReceiptHandle: handle,
-          VisibilityTimeout: 0,
-        }),
-      ).then(() => removePendingDelete(key))
-       .catch(() => { removePendingDelete(key); }),
-    );
-    await Promise.all(pendingReleases);
-    logger?.info('Pending-delete messages released');
-  }
+  // Pending receipt handles are now in DynamoDB (survive restart).
+  // No need to flush on shutdown — they persist across control-plane restarts.
 }
 
 // Simple counting semaphore for concurrency control
@@ -174,47 +154,41 @@ async function consumeLoop(logger: Logger): Promise<void> {
         const handle = msg.ReceiptHandle!;
         inFlightHandles.add(handle);
 
-        // Fire-and-forget dispatch — defer SQS delete until agent's final reply
+        let groupKey: string | null = null;
+        try {
+          const body = JSON.parse(msg.Body!) as SqsPayload;
+          groupKey = `${body.botId}#${body.groupJid}`;
+        } catch { /* parse error handled in .then */ }
+
+        // Fire-and-forget dispatch — defer SQS delete until agent's final reply.
+        // FIFO ordering ensures same-group messages are processed sequentially.
+        // This is critical in BOTH modes:
+        // - AgentCore: prevents dispatching to different microVMs simultaneously
+        // - ECS dedicated task: prevents assigning multiple tasks to same session
         dispatch(msg, logger)
-          .then(() => {
-            // Don't delete yet — store receipt handle for deferred deletion.
-            // Reply-consumer will delete when it receives isFinalReply/isError.
-            // This ensures SQS FIFO blocks the next same-group message until
-            // the current agent invocation completes.
-            try {
-              const body = JSON.parse(msg.Body!) as SqsPayload;
-              const key = `${body.botId}#${body.groupJid}`;
-              setPendingDelete(key, handle);
-              logger.debug({ key, messageId: msg.MessageId }, 'Deferred SQS delete until agent reply');
-            } catch {
-              // If we can't parse the body, delete immediately to avoid blocking
+          .then(async () => {
+            if (groupKey) {
+              // Store receipt handle in DynamoDB (survives control-plane restarts).
+              // Reply-consumer reads it to delete the inbound message when agent completes.
+              const [botId, ...rest] = groupKey.split('#');
+              const groupJid = rest.join('#');
+              await touchSessionTask(botId, groupJid, handle).catch((err) =>
+                logger.warn({ err, key: groupKey }, 'Failed to persist pending receipt handle'),
+              );
+              logger.debug({ key: groupKey, messageId: msg.MessageId }, 'Deferred SQS delete until agent reply');
+            } else {
               sqs.send(new DeleteMessageCommand({
                 QueueUrl: config.queues.messages,
                 ReceiptHandle: handle,
               })).catch(() => {});
             }
           })
-          .catch((err) => {
-            if (err instanceof AgentBusyError) {
-              // Last resort — internal retries (~5 min) exhausted. Shorten visibility
-              // so message retries from queue. This should rarely happen since auto-scaling
-              // typically adds capacity within the 5-min internal retry window.
-              sqs.send(new ChangeMessageVisibilityCommand({
-                QueueUrl: config.queues.messages,
-                ReceiptHandle: handle,
-                VisibilityTimeout: 60,
-              })).catch(() => {});
-              logger.warn(
-                { messageId: msg.MessageId },
-                'All agent tasks busy after ~5min of retries, message will retry in 60s',
-              );
-            } else {
-              logger.error(
-                { err, messageId: msg.MessageId },
-                'Dispatch failed, message will return to queue after visibility timeout',
-              );
-            }
-          })
+          .catch((err) =>
+            logger.error(
+              { err, messageId: msg.MessageId },
+              'Dispatch failed, message will return to queue after visibility timeout',
+            ),
+          )
           .finally(() => {
             inFlightHandles.delete(handle);
             semaphore.release();
