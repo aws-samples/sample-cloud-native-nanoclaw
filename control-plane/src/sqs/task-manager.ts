@@ -11,7 +11,6 @@ import {
 } from '@aws-sdk/client-ecs';
 import { config } from '../config.js';
 import {
-  putWarmTask,
   countWarmTasks,
   deleteWarmTask,
   claimWarmTask,
@@ -19,6 +18,8 @@ import {
   assignTaskToSession,
   clearSessionTask,
   scanIdleSessionTasks,
+  acquireReplenishLock,
+  releaseReplenishLock,
 } from '../services/dynamo.js';
 import type { Logger } from 'pino';
 
@@ -178,7 +179,9 @@ async function runAgentTask(logger: Logger): Promise<string> {
 
 /**
  * Replenish the warm pool to maintain `config.minWarmTasks` idle tasks.
- * Starts the deficit number of tasks in parallel.
+ * Uses a DynamoDB distributed lock to prevent multiple control-plane replicas
+ * from replenishing simultaneously (which would over-provision).
+ * Lock TTL: 60s — if a replica crashes mid-replenish, the lock auto-expires.
  */
 async function replenishWarmPool(logger: Logger): Promise<void> {
   const current = await countWarmTasks();
@@ -186,21 +189,36 @@ async function replenishWarmPool(logger: Logger): Promise<void> {
 
   if (deficit <= 0) return;
 
-  logger.info(
-    { current, target: config.minWarmTasks, deficit },
-    'Replenishing warm pool',
-  );
+  // Acquire distributed lock — only one replica replenishes at a time
+  const lockAcquired = await acquireReplenishLock(60);
+  if (!lockAcquired) {
+    logger.debug('Warm pool replenish skipped — another replica holds the lock');
+    return;
+  }
 
-  const launches = Array.from({ length: deficit }, async () => {
-    try {
-      await runAgentTask(logger);
-      // The task will self-register via putWarmTask when it boots and calls /register
-    } catch (err) {
-      logger.error({ err }, 'Failed to launch warm pool task');
-    }
-  });
+  try {
+    // Re-check after acquiring lock (another replica may have just finished)
+    const recheck = await countWarmTasks();
+    const actualDeficit = config.minWarmTasks - recheck;
+    if (actualDeficit <= 0) return;
 
-  await Promise.allSettled(launches);
+    logger.info(
+      { current: recheck, target: config.minWarmTasks, deficit: actualDeficit },
+      'Replenishing warm pool',
+    );
+
+    const launches = Array.from({ length: actualDeficit }, async () => {
+      try {
+        await runAgentTask(logger);
+      } catch (err) {
+        logger.error({ err }, 'Failed to launch warm pool task');
+      }
+    });
+
+    await Promise.allSettled(launches);
+  } finally {
+    await releaseReplenishLock().catch(() => {});
+  }
 }
 
 /**

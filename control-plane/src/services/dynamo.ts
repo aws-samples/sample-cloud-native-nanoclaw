@@ -978,6 +978,48 @@ export async function putSession(session: Session): Promise<void> {
 
 // ── ECS Dedicated Task Registry ──────────────────────────────────────────
 
+/**
+ * Acquire a distributed lock for warm pool replenish.
+ * Uses DynamoDB conditional put with TTL to prevent multiple replicas
+ * from replenishing simultaneously.
+ * Returns true if lock acquired, false if another replica holds it.
+ */
+export async function acquireReplenishLock(ttlSeconds: number): Promise<boolean> {
+  const now = Math.floor(Date.now() / 1000);
+  try {
+    await client.send(
+      new PutCommand({
+        TableName: config.tables.sessions,
+        Item: {
+          pk: 'lock#replenish',
+          sk: 'current',
+          expiresAt: now + ttlSeconds,
+          acquiredAt: new Date().toISOString(),
+        },
+        // Only succeed if lock doesn't exist or has expired
+        ConditionExpression: 'attribute_not_exists(pk) OR expiresAt < :now',
+        ExpressionAttributeValues: { ':now': now },
+      }),
+    );
+    return true;
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'ConditionalCheckFailedException') {
+      return false; // Another replica holds the lock
+    }
+    throw err;
+  }
+}
+
+/** Release the replenish lock. */
+export async function releaseReplenishLock(): Promise<void> {
+  await client.send(
+    new DeleteCommand({
+      TableName: config.tables.sessions,
+      Key: { pk: 'lock#replenish', sk: 'current' },
+    }),
+  );
+}
+
 /** Register a warm (unassigned) ECS task in the sessions table. */
 export async function putWarmTask(
   taskArn: string,
