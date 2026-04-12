@@ -214,6 +214,8 @@ export interface Session {
   taskIp?: string;
   taskStatus?: 'warm' | 'running' | 'stopping' | 'stopped';
   lastInvocationAt?: string;
+  /** SQS receipt handle for deferred inbound message deletion (survives CP restart) */
+  pendingReceiptHandle?: string;
 }
 
 // --- SQS Message Payloads ---

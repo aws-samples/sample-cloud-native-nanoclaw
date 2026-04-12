@@ -7,7 +7,6 @@ import {
   ReceiveMessageCommand,
   DeleteMessageCommand,
 } from '@aws-sdk/client-sqs';
-import { getPendingDelete, removePendingDelete } from './pending-deletes.js';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { config } from '../config.js';
 import { getRegistry } from '../adapters/registry.js';
@@ -19,6 +18,8 @@ import {
   putMessage,
   putSession,
   updateUserUsage,
+  getSession,
+  clearPendingHandle,
 } from '../services/dynamo.js';
 
 let running = false;
@@ -149,22 +150,22 @@ async function replyLoop(logger: Logger): Promise<void> {
                 logger,
               );
 
-              // Deferred inbound message deletion — when agent sends final reply,
-              // delete the original inbound SQS FIFO message to unblock same-group queue
+              // Deferred inbound message deletion — read receipt handle from DynamoDB
+              // (persisted by consumer on dispatch, survives control-plane restarts)
               if (textPayload.metadata.isFinalReply || textPayload.metadata.isError) {
-                const key = `${payload.botId}#${payload.groupJid}`;
-                const pendingHandle = getPendingDelete(key);
+                const session = await getSession(payload.botId, payload.groupJid);
+                const pendingHandle = session?.pendingReceiptHandle;
                 if (pendingHandle) {
                   try {
                     await sqs.send(new DeleteMessageCommand({
                       QueueUrl: config.queues.messages,
                       ReceiptHandle: pendingHandle,
                     }));
-                    removePendingDelete(key);
-                    logger.info({ key }, 'Deferred inbound message deleted (agent completed)');
+                    await clearPendingHandle(payload.botId, payload.groupJid);
+                    logger.info({ key: `${payload.botId}#${payload.groupJid}` }, 'Deferred inbound message deleted (agent completed)');
                   } catch (delErr) {
-                    logger.warn({ key, err: delErr }, 'Failed to delete deferred inbound message (may have expired)');
-                    removePendingDelete(key);
+                    logger.warn({ key: `${payload.botId}#${payload.groupJid}`, err: delErr }, 'Failed to delete deferred inbound message (may have expired)');
+                    await clearPendingHandle(payload.botId, payload.groupJid).catch(() => {});
                   }
                 }
               }

@@ -9,7 +9,7 @@ import {
 } from '@aws-sdk/client-sqs';
 import { config } from '../config.js';
 import { dispatch } from './dispatcher.js';
-import { setPendingDelete, getAllPendingHandles, removePendingDelete } from './pending-deletes.js';
+import { touchSessionTask } from '../services/dynamo.js';
 import type { SqsPayload } from '@clawbot/shared';
 import type { Logger } from 'pino';
 
@@ -73,26 +73,8 @@ export async function stopSqsConsumer(timeoutMs = 15_000): Promise<void> {
     logger?.info('In-flight messages released');
   }
 
-  // Release pending-delete messages (dispatched to agent but not yet completed)
-  const pendingHandles = getAllPendingHandles();
-  if (pendingHandles.size > 0) {
-    logger?.info(
-      { pending: pendingHandles.size },
-      'Releasing pending-delete messages back to queue',
-    );
-    const pendingReleases = [...pendingHandles.entries()].map(([key, handle]) =>
-      sqs.send(
-        new ChangeMessageVisibilityCommand({
-          QueueUrl: config.queues.messages,
-          ReceiptHandle: handle,
-          VisibilityTimeout: 0,
-        }),
-      ).then(() => removePendingDelete(key))
-       .catch(() => { removePendingDelete(key); }),
-    );
-    await Promise.all(pendingReleases);
-    logger?.info('Pending-delete messages released');
-  }
+  // Pending receipt handles are now in DynamoDB (survive restart).
+  // No need to flush on shutdown — they persist across control-plane restarts.
 }
 
 // Simple counting semaphore for concurrency control
@@ -184,9 +166,15 @@ async function consumeLoop(logger: Logger): Promise<void> {
         // - AgentCore: prevents dispatching to different microVMs simultaneously
         // - ECS dedicated task: prevents assigning multiple tasks to same session
         dispatch(msg, logger)
-          .then(() => {
+          .then(async () => {
             if (groupKey) {
-              setPendingDelete(groupKey, handle);
+              // Store receipt handle in DynamoDB (survives control-plane restarts).
+              // Reply-consumer reads it to delete the inbound message when agent completes.
+              const [botId, ...rest] = groupKey.split('#');
+              const groupJid = rest.join('#');
+              await touchSessionTask(botId, groupJid, handle).catch((err) =>
+                logger.warn({ err, key: groupKey }, 'Failed to persist pending receipt handle'),
+              );
               logger.debug({ key: groupKey, messageId: msg.MessageId }, 'Deferred SQS delete until agent reply');
             } else {
               sqs.send(new DeleteMessageCommand({

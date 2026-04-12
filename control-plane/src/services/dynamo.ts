@@ -1170,18 +1170,36 @@ export async function assignTaskToSession(
   );
 }
 
-/** Bump the last-invocation timestamp on a session's dedicated task. */
+/** Bump the last-invocation timestamp and optionally store pending receipt handle. */
 export async function touchSessionTask(
   botId: string,
   groupJid: string,
+  pendingReceiptHandle?: string,
 ): Promise<void> {
   const pk = `${botId}#${groupJid}`;
   await client.send(
     new UpdateCommand({
       TableName: config.tables.sessions,
       Key: { pk, sk: 'current' },
-      UpdateExpression: 'SET lastInvocationAt = :now',
-      ExpressionAttributeValues: { ':now': new Date().toISOString() },
+      UpdateExpression: pendingReceiptHandle
+        ? 'SET lastInvocationAt = :now, pendingReceiptHandle = :handle'
+        : 'SET lastInvocationAt = :now',
+      ExpressionAttributeValues: {
+        ':now': new Date().toISOString(),
+        ...(pendingReceiptHandle && { ':handle': pendingReceiptHandle }),
+      },
+    }),
+  );
+}
+
+/** Clear the pending receipt handle after deferred SQS delete completes. */
+export async function clearPendingHandle(botId: string, groupJid: string): Promise<void> {
+  const pk = `${botId}#${groupJid}`;
+  await client.send(
+    new UpdateCommand({
+      TableName: config.tables.sessions,
+      Key: { pk, sk: 'current' },
+      UpdateExpression: 'REMOVE pendingReceiptHandle',
     }),
   );
 }
