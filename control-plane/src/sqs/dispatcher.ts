@@ -645,16 +645,25 @@ class EcsTaskInvoker implements AgentInvoker {
       await clearSessionTask(payload.botId, payload.groupJid);
     }
 
-    // 2b. Assign a new task (warm pool or cold start)
-    const taskIp = await assignTaskForSession(payload.botId, payload.groupJid, logger);
+    // 2b. Assign a new task (warm pool or cold start) — retry once if the
+    // assigned task is unreachable (race between idle shutdown and claim).
+    for (let assignAttempt = 0; assignAttempt < 2; assignAttempt++) {
+      const taskIp = await assignTaskForSession(payload.botId, payload.groupJid, logger);
 
-    // 3. Dispatch to newly assigned task
-    const result = await this.httpInvoke(taskIp, payload, logger);
-    if (!result) {
-      return { status: 'error', result: null, error: 'Failed to dispatch to newly assigned task' };
+      // 3. Dispatch to newly assigned task
+      const result = await this.httpInvoke(taskIp, payload, logger);
+      if (result) {
+        await touchSessionTask(payload.botId, payload.groupJid);
+        return result;
+      }
+
+      // Task unreachable (e.g. idle shutdown race) — clear and retry
+      if (assignAttempt === 0) {
+        logger.warn({ botId: payload.botId, taskIp }, 'Newly assigned task unreachable, clearing and retrying');
+        await clearSessionTask(payload.botId, payload.groupJid);
+      }
     }
-    await touchSessionTask(payload.botId, payload.groupJid);
-    return result;
+    return { status: 'error', result: null, error: 'Failed to dispatch to newly assigned task' };
   }
 
   /** HTTP POST to task. Returns null if task is unreachable (for reassignment). */
