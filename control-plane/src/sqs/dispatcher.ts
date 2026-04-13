@@ -645,9 +645,10 @@ class EcsTaskInvoker implements AgentInvoker {
       await clearSessionTask(payload.botId, payload.groupJid);
     }
 
-    // 2b. Assign a new task (warm pool or cold start) — retry once if the
-    // assigned task is unreachable (race between idle shutdown and claim).
-    for (let assignAttempt = 0; assignAttempt < 2; assignAttempt++) {
+    // 2b. Assign a new task (warm pool or cold start) — retry up to 3 times
+    // if the assigned task is unreachable (race between idle shutdown and claim).
+    // 3 attempts covers the entire warm pool (default 2) + one cold start fallback.
+    for (let assignAttempt = 0; assignAttempt < 3; assignAttempt++) {
       const taskIp = await assignTaskForSession(payload.botId, payload.groupJid, logger);
 
       // 3. Dispatch to newly assigned task
@@ -658,8 +659,8 @@ class EcsTaskInvoker implements AgentInvoker {
       }
 
       // Task unreachable (e.g. idle shutdown race) — clear and retry
-      if (assignAttempt === 0) {
-        logger.warn({ botId: payload.botId, taskIp }, 'Newly assigned task unreachable, clearing and retrying');
+      if (assignAttempt < 2) {
+        logger.warn({ botId: payload.botId, taskIp, attempt: assignAttempt + 1 }, 'Newly assigned task unreachable, clearing and retrying');
         await clearSessionTask(payload.botId, payload.groupJid);
       }
     }
