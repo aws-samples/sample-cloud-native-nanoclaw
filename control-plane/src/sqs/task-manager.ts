@@ -44,9 +44,22 @@ export async function assignTaskForSession(
   groupJid: string,
   logger: Logger,
 ): Promise<string> {
-  // Attempt warm claim first (claiming a warm task doesn't increase total count)
-  const warm = await claimWarmTask();
-  if (warm) {
+  // Attempt warm claim — loop to skip stale warm tasks whose ECS task has stopped
+  // between replenish cycles (up to 3 attempts before falling through to cold start).
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const warm = await claimWarmTask();
+    if (!warm) break; // Pool empty — fall through to cold start
+
+    // Verify the ECS task is actually alive before using it
+    const alive = await isTaskRunning(warm.taskArn);
+    if (!alive) {
+      logger.warn(
+        { taskArn: warm.taskArn, taskIp: warm.taskIp, attempt },
+        'Claimed warm task is stale (ECS task stopped), retrying',
+      );
+      continue; // claimWarmTask already deleted the record; try next
+    }
+
     logger.info(
       { taskArn: warm.taskArn, taskIp: warm.taskIp },
       'Claimed warm task for session',
