@@ -32,7 +32,13 @@ import {
 } from '@aws-sdk/client-secrets-manager';
 import type pino from 'pino';
 import type { InvocationPayload, InvocationResult, Attachment, ResolvedMcpConfig } from '@clawbot/shared';
-import { syncFromS3, syncToS3, clearSessionDirectory, syncMemoryOnlyFromS3, downloadSkills, type SyncPaths } from './session.js';
+import {
+  syncFromS3, syncToS3,
+  clearSessionDirectory, syncMemoryOnlyFromS3,
+  incrementalSyncFromS3, incrementalSyncToS3,
+  downloadSkills, type SyncPaths,
+} from './session.js';
+import { syncState } from './sync-state.js';
 import { buildAppendContent } from './system-prompt.js';
 import { getScopedClients } from './scoped-credentials.js';
 import { startCredentialProxy, type CredentialProxy } from './credential-proxy.js';
@@ -208,8 +214,13 @@ async function _handleInvocation(
 ): Promise<InvocationResult> {
   const { botId, botName, groupJid, userId, prompt, sessionPath, memoryPaths } = payload;
 
-  // Session switch detection — clean workspace if serving a different bot/group
+  // Session switch detection + three-path sync selection
   const sessionKey = `${botId}#${groupJid}`;
+  const forceNewSession = !!payload.forceNewSession;
+  const isSessionContinuation = syncState.initialized
+    && currentSessionKey === sessionKey
+    && !forceNewSession;
+
   if (currentSessionKey && currentSessionKey !== sessionKey) {
     logger.info(
       { previousSession: currentSessionKey, newSession: sessionKey },
@@ -221,11 +232,8 @@ async function _handleInvocation(
   // 1. Get scoped credentials (STS ABAC — userId + botId tags)
   logger.info({ botId, userId }, 'Acquiring scoped credentials');
   const scopedClients = await getScopedClients(userId, botId);
-
-  // Also create an S3 client with the scoped credentials for session sync
   const s3 = scopedClients.s3;
 
-  // 2. Sync session and memory from S3 → local workspace
   const syncPaths: SyncPaths = {
     sessionPath,
     botClaude: memoryPaths.botClaude,
@@ -233,30 +241,43 @@ async function _handleInvocation(
     learningsPrefix: memoryPaths.learnings,
   };
 
-  // Always clean local workspace before sync to prevent cross-tenant file leakage.
-  // In ECS mode, multiple users share the same container — files from a previous
-  // invocation must be removed before downloading the current user's data from S3.
-  await cleanLocalWorkspace();
-
-  // 2b. Download platform-managed skills first (before S3 session sync)
-  if (payload.skills?.length) {
-    logger.info({ skillCount: payload.skills.length }, 'Downloading enabled skills');
-    await downloadSkills(s3, SESSION_BUCKET, payload.skills, logger);
-  }
-
-  // 2c. Sync session from S3 (overlays user-installed skills on top of bundled + platform)
-  const forceNewSession = !!payload.forceNewSession;
+  // 2. Three-path sync from S3 → local workspace
   if (forceNewSession) {
-    logger.info(
-      { botId, groupJid, model: payload.model, modelProvider: payload.modelProvider },
-      'Model/provider change detected, resetting session',
-    );
+    // Path C: model/provider changed → full clean + session reset
+    logger.info({ botId, groupJid }, 'Path C: forceNewSession — full clean + session reset');
+    await cleanLocalWorkspace();
+    if (payload.skills?.length) {
+      await downloadSkills(s3, SESSION_BUCKET, payload.skills, logger);
+    }
     await clearSessionDirectory(s3, SESSION_BUCKET, sessionPath, logger);
-    await syncMemoryOnlyFromS3(s3, SESSION_BUCKET, syncPaths, logger);
+    syncState.clearPrefix(sessionPath);
+    syncState.clearDownloadedKeys(sessionPath);
+    await syncMemoryOnlyFromS3(s3, SESSION_BUCKET, syncPaths, logger, syncState);
+  } else if (isSessionContinuation) {
+    // Path B: same session, subsequent request → incremental
+    logger.info({ botId, groupJid }, 'Path B: incremental sync (session continuation)');
+    if (payload.skills?.length) {
+      await downloadSkills(s3, SESSION_BUCKET, payload.skills, logger);
+    }
+    await incrementalSyncFromS3(s3, SESSION_BUCKET, syncPaths, logger, syncState);
   } else {
-    logger.info({ sessionPath, groupJid }, 'Syncing session from S3');
-    await syncFromS3(s3, SESSION_BUCKET, syncPaths, logger);
+    // Path A: first request or session switch → full clean + full sync
+    logger.info({ botId, groupJid }, 'Path A: full sync (first request or session switch)');
+    syncState.reset();
+    await cleanLocalWorkspace();
+    if (payload.skills?.length) {
+      await downloadSkills(s3, SESSION_BUCKET, payload.skills, logger);
+    }
+    await syncFromS3(s3, SESSION_BUCKET, syncPaths, logger, syncState);
   }
+
+  // Take local snapshot before agent runs (for upload optimization)
+  await syncState.takeLocalSnapshot([
+    '/home/node/.claude',
+    '/workspace/group',
+    '/workspace/learnings',
+  ]);
+  syncState.initialized = true;
 
   // 2d. Download inbound attachments to /workspace/group/attachments/
   if (payload.attachments?.length) {
@@ -381,9 +402,9 @@ async function _handleInvocation(
     }
   }
 
-  // 9. Sync session and memory back to S3
+  // 9. Sync session and memory back to S3 (incremental — skip unchanged files)
   logger.info('Syncing session back to S3');
-  await syncToS3(s3, SESSION_BUCKET, syncPaths, logger);
+  await incrementalSyncToS3(s3, SESSION_BUCKET, syncPaths, logger, syncState);
 
   logger.info(
     { status: result.status, sessionId: result.newSessionId },
