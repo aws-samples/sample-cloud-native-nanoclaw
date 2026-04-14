@@ -46,6 +46,10 @@ export class SyncState {
     return this._s3Etags.get(s3Key);
   }
 
+  deleteEtag(s3Key: string): void {
+    this._s3Etags.delete(s3Key);
+  }
+
   /** Remove all ETags whose key starts with the given prefix. */
   clearPrefix(prefix: string): void {
     for (const key of this._s3Etags.keys()) {

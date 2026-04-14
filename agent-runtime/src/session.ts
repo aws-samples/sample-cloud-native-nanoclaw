@@ -11,10 +11,10 @@
  *   /workspace/learnings/         ← Learning journal
  */
 
-import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command, HeadObjectCommand } from '@aws-sdk/client-s3';
 import type { SyncState } from './sync-state.js';
 
-import { mkdir, readdir, readFile, writeFile, stat, realpath } from 'fs/promises';
+import { mkdir, readdir, readFile, writeFile, stat, realpath, unlink } from 'fs/promises';
 import { join, dirname, relative } from 'path';
 import type pino from 'pino';
 
@@ -166,6 +166,36 @@ export async function syncMemoryOnlyFromS3(
   }
 }
 
+/**
+ * Incremental download: skip session state, re-download only changed memory files.
+ *
+ * Used when the same session continues on the same VM/task (Path B).
+ * - Session state download is skipped entirely (local is authoritative).
+ * - Bot CLAUDE.md is re-downloaded only if ETag changed (HeadObject check).
+ * - Group workspace and learnings are incrementally synced: changed/new files
+ *   are downloaded, and local files whose S3 keys disappeared are deleted.
+ */
+export async function incrementalSyncFromS3(
+  s3: S3Client,
+  bucket: string,
+  paths: SyncPaths,
+  logger: pino.Logger,
+  state: SyncState,
+): Promise<void> {
+  // 1. Skip session state download entirely (local is authoritative)
+
+  // 2. HeadObject check botClaude — re-download only if changed
+  await downloadFileIfChanged(s3, bucket, paths.botClaude, join(CLAUDE_DIR, 'CLAUDE.md'), logger, state);
+
+  // 3. Incremental download group workspace
+  await downloadDirectoryIncremental(s3, bucket, paths.groupPrefix, join(WORKSPACE_BASE, 'group'), logger, state);
+
+  // 4. Incremental download learnings (if present)
+  if (paths.learningsPrefix) {
+    await downloadDirectoryIncremental(s3, bucket, paths.learningsPrefix, join(WORKSPACE_BASE, 'learnings'), logger, state);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -184,6 +214,112 @@ function isExcludedPath(relPath: string): boolean {
   const segments = relPath.split('/');
   if (EXCLUDED_FILES.has(segments[segments.length - 1])) return true;
   return segments.some((seg) => EXCLUDED_DIRS.has(seg));
+}
+
+/**
+ * HeadObject ETag check for a single file. Re-downloads only if ETag changed.
+ */
+async function downloadFileIfChanged(
+  s3: S3Client,
+  bucket: string,
+  key: string,
+  localPath: string,
+  logger: pino.Logger,
+  state: SyncState,
+): Promise<void> {
+  try {
+    const head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    const remoteEtag = head.ETag;
+    const cachedEtag = state.getEtag(key);
+
+    if (remoteEtag && cachedEtag === remoteEtag) {
+      logger.debug({ key, etag: remoteEtag }, 'ETag unchanged, skipping download');
+      return;
+    }
+
+    // ETag different or new — full download
+    await downloadFile(s3, bucket, key, localPath, logger, state);
+  } catch (err: unknown) {
+    if (err instanceof Error && (err.name === 'NotFound' || err.name === '404' || err.name === 'NoSuchKey')) {
+      logger.debug({ key }, 'File not found in S3 (HeadObject), skipping');
+    } else {
+      throw err;
+    }
+  }
+}
+
+/**
+ * ListObjectsV2 + ETag comparison for directories.
+ * Downloads changed/new files, deletes local files whose S3 keys disappeared.
+ */
+async function downloadDirectoryIncremental(
+  s3: S3Client,
+  bucket: string,
+  prefix: string,
+  localDir: string,
+  logger: pino.Logger,
+  state: SyncState,
+): Promise<void> {
+  // Get previous downloaded keys for this prefix
+  const previousKeys = new Set(state.getDownloadedKeys(prefix));
+
+  // Clear downloaded keys for this prefix — we will rebuild from the current listing
+  state.clearDownloadedKeys(prefix);
+
+  const currentKeys = new Set<string>();
+  let continuationToken: string | undefined;
+
+  do {
+    const resp = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      }),
+    );
+
+    for (const obj of resp.Contents ?? []) {
+      if (!obj.Key) continue;
+      const rel = obj.Key.slice(prefix.length).replace(/^\/+/, '');
+      if (!rel) continue;
+      if (isExcludedPath(rel)) continue;
+
+      currentKeys.add(obj.Key);
+      state.recordDownloadedKey(prefix, obj.Key);
+
+      // Check ETag — skip if unchanged
+      const cachedEtag = state.getEtag(obj.Key);
+      if (obj.ETag && cachedEtag === obj.ETag) {
+        logger.debug({ key: obj.Key, etag: obj.ETag }, 'ETag unchanged, skipping download');
+        continue;
+      }
+
+      // Changed or new — download and update ETag
+      await downloadFile(s3, bucket, obj.Key, join(localDir, rel), logger, state);
+      if (obj.ETag) {
+        state.recordEtag(obj.Key, obj.ETag);
+      }
+    }
+
+    continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  // Delete local files whose S3 keys disappeared (e.g., removed via web console)
+  for (const prevKey of previousKeys) {
+    if (!currentKeys.has(prevKey)) {
+      const rel = prevKey.slice(prefix.length).replace(/^\/+/, '');
+      if (!rel) continue;
+      const localPath = join(localDir, rel);
+      try {
+        await unlink(localPath);
+        logger.debug({ key: prevKey, localPath }, 'Deleted local file (S3 key removed)');
+      } catch {
+        // File may not exist locally — ignore
+      }
+      // Clear stale ETag
+      state.deleteEtag(prevKey);
+    }
+  }
 }
 
 async function deleteS3Object(
