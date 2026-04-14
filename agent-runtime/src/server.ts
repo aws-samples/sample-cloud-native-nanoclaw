@@ -13,7 +13,7 @@ import pino from 'pino';
 import { handleInvocation } from './agent.js';
 import { sendFinalReply, sendErrorReply } from './mcp-tools.js';
 import { registerTask } from './task-registration.js';
-import { startIdleMonitor, resetIdleTimer } from './idle-monitor.js';
+import { startIdleMonitor, resetIdleTimer, pauseIdleTimer } from './idle-monitor.js';
 import type { InvocationPayload } from '@clawbot/shared';
 import { formatOutbound } from '@clawbot/shared/text-utils';
 
@@ -49,8 +49,9 @@ app.post<{ Body: InvocationPayload }>('/invocations', async (request, reply) => 
   logger.info({ botId: payload.botId, groupJid: payload.groupJid }, 'Invocation received');
   setBusy();
 
-  // Reset idle timer on each invocation (ECS dedicated mode)
-  if (process.env.AGENT_MODE === 'ecs') resetIdleTimer();
+  // Pause idle timer while busy — prevents long-running invocations (>15 min)
+  // from being killed mid-execution. Timer restarts in runInBackground's finally block.
+  if (process.env.AGENT_MODE === 'ecs') pauseIdleTimer();
 
   // Fire-and-forget: run in background, respond immediately
   runInBackground(payload).catch((err) => {
@@ -90,6 +91,10 @@ async function runInBackground(payload: InvocationPayload): Promise<void> {
     });
   } finally {
     setIdle();
+    // Reset idle timer AFTER invocation completes, not when request arrives.
+    // The timer at request time (line 53) prevents timeout during execution;
+    // this reset starts the real idle countdown from completion.
+    if (process.env.AGENT_MODE === 'ecs') resetIdleTimer();
   }
 }
 

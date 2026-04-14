@@ -21,7 +21,7 @@ export function startIdleMonitor(
   logger.info({ idleTimeoutMinutes }, 'Idle monitor started');
 }
 
-/** Reset the idle timer (call on each invocation). */
+/** Reset the idle timer (call when invocation completes or on startup). */
 export function resetIdleTimer(): void {
   if (idleTimer) clearTimeout(idleTimer);
   idleTimer = setTimeout(async () => {
@@ -35,6 +35,15 @@ export function resetIdleTimer(): void {
   }, timeoutMs);
   // Don't let the timer keep the process alive if everything else is done
   idleTimer.unref();
+}
+
+/** Pause the idle timer while an invocation is in progress.
+ *  Prevents long-running invocations (>15 min) from being killed mid-execution. */
+export function pauseIdleTimer(): void {
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
 }
 
 /** Stop the idle monitor (e.g., during graceful shutdown). */
