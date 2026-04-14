@@ -14,6 +14,7 @@
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command, HeadObjectCommand } from '@aws-sdk/client-s3';
 import type { SyncState } from './sync-state.js';
 
+import { existsSync } from 'fs';
 import { mkdir, readdir, readFile, writeFile, stat, realpath, unlink } from 'fs/promises';
 import { join, dirname, relative } from 'path';
 import type pino from 'pino';
@@ -502,6 +503,136 @@ async function uploadDirectory(
       logger.debug({ localDir }, 'Directory not found, skipping upload');
     } else {
       throw err;
+    }
+  }
+}
+
+/**
+ * Check a single local file against the snapshot. Upload only if mtime or size changed.
+ */
+async function uploadFileIfChanged(
+  s3: S3Client,
+  bucket: string,
+  localPath: string,
+  key: string,
+  logger: pino.Logger,
+  state: SyncState,
+): Promise<void> {
+  try {
+    const st = await stat(localPath);
+    const snap = state.getSnapshotEntry(localPath);
+
+    if (snap && snap.mtimeMs === st.mtimeMs && snap.size === st.size) {
+      logger.debug({ localPath, key }, 'File unchanged (mtime + size match snapshot), skipping upload');
+      return;
+    }
+
+    await uploadFile(s3, bucket, localPath, key, logger, state);
+  } catch (err: unknown) {
+    if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+      // File doesn't exist locally — skip silently
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Walk directory, upload only files that changed vs snapshot.
+ */
+async function uploadDirectoryIncremental(
+  s3: S3Client,
+  bucket: string,
+  localDir: string,
+  prefix: string,
+  logger: pino.Logger,
+  state: SyncState,
+): Promise<void> {
+  try {
+    const entries = await readdir(localDir, { recursive: true, withFileTypes: true });
+
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+
+      const fullPath = join(entry.parentPath ?? '', entry.name);
+      const rel = relative(localDir, fullPath);
+
+      if (isExcludedPath(rel)) continue;
+
+      try {
+        const st = await stat(fullPath);
+        const snap = state.getSnapshotEntry(fullPath);
+
+        if (snap && snap.mtimeMs === st.mtimeMs && snap.size === st.size) {
+          logger.debug({ fullPath, key: prefix + rel }, 'File unchanged, skipping upload');
+          continue;
+        }
+
+        await uploadFile(s3, bucket, fullPath, prefix + rel, logger, state);
+      } catch (err: unknown) {
+        if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+          // File vanished between readdir and stat — skip
+          continue;
+        }
+        throw err;
+      }
+    }
+  } catch (err: unknown) {
+    if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+      // Directory doesn't exist — skip silently
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Incremental upload: upload only files changed since the snapshot, and delete
+ * S3 objects for files that the agent deleted locally.
+ *
+ * Used after agent invocation when SyncState has a pre-run snapshot.
+ */
+export async function incrementalSyncToS3(
+  s3: S3Client,
+  bucket: string,
+  paths: SyncPaths,
+  logger: pino.Logger,
+  state: SyncState,
+): Promise<void> {
+  // 1. Upload each sync directory incrementally
+
+  // Session dir (CLAUDE_DIR → paths.sessionPath)
+  await uploadDirectoryIncremental(s3, bucket, CLAUDE_DIR, paths.sessionPath, logger, state);
+
+  // Bot CLAUDE.md (single file)
+  await uploadFileIfChanged(s3, bucket, join(CLAUDE_DIR, 'CLAUDE.md'), paths.botClaude, logger, state);
+
+  // Group workspace (/workspace/group → paths.groupPrefix)
+  await uploadDirectoryIncremental(s3, bucket, join(WORKSPACE_BASE, 'group'), paths.groupPrefix, logger, state);
+
+  // Learnings if present (/workspace/learnings → paths.learningsPrefix)
+  if (paths.learningsPrefix) {
+    await uploadDirectoryIncremental(s3, bucket, join(WORKSPACE_BASE, 'learnings'), paths.learningsPrefix, logger, state);
+  }
+
+  // 2. Delete sync: check each downloaded key — if local file no longer exists, delete from S3
+  const prefixToLocalBase: Array<[string, string]> = [
+    [paths.sessionPath, CLAUDE_DIR],
+    [paths.groupPrefix, join(WORKSPACE_BASE, 'group')],
+  ];
+
+  if (paths.learningsPrefix) {
+    prefixToLocalBase.push([paths.learningsPrefix, join(WORKSPACE_BASE, 'learnings')]);
+  }
+
+  for (const [prefix, localBase] of prefixToLocalBase) {
+    for (const key of state.getDownloadedKeys(prefix)) {
+      const rel = key.slice(prefix.length).replace(/^\/+/, '');
+      if (!rel) continue;
+      const localPath = join(localBase, rel);
+      if (!existsSync(localPath)) {
+        await deleteS3Object(s3, bucket, key, logger);
+      }
     }
   }
 }
