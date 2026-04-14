@@ -8,21 +8,7 @@
 
 import { readdir, stat } from 'fs/promises';
 import { join, relative } from 'path';
-
-/** Directory names that should never be scanned or synced. */
-const EXCLUDED_DIRS = new Set(['.git', 'node_modules', '.venv', '__pycache__']);
-
-/** File names that should never be scanned or synced. */
-const EXCLUDED_FILES = new Set(['settings.json']);
-
-/**
- * Check if a relative path contains an excluded directory segment or excluded file.
- */
-function isExcludedPath(relPath: string): boolean {
-  const segments = relPath.split('/');
-  if (EXCLUDED_FILES.has(segments[segments.length - 1])) return true;
-  return segments.some((seg) => EXCLUDED_DIRS.has(seg));
-}
+import { isExcludedPath } from './sync-utils.js';
 
 export class SyncState {
   initialized = false;

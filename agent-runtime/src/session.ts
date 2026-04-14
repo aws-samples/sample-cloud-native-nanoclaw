@@ -201,21 +201,7 @@ export async function incrementalSyncFromS3(
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/** Directory names that should never be synced to/from S3. */
-const EXCLUDED_DIRS = new Set(['.git', 'node_modules', '.venv', '__pycache__']);
-
-/** Files that should never be synced to/from S3 (managed at runtime, not persisted). */
-const EXCLUDED_FILES = new Set(['settings.json']);
-
-/**
- * Check if a relative path contains an excluded directory segment or excluded file.
- * e.g. "foo/.git/objects/pack.idx" → true, "settings.json" → true, "foo/bar.txt" → false
- */
-function isExcludedPath(relPath: string): boolean {
-  const segments = relPath.split('/');
-  if (EXCLUDED_FILES.has(segments[segments.length - 1])) return true;
-  return segments.some((seg) => EXCLUDED_DIRS.has(seg));
-}
+import { isExcludedPath } from './sync-utils.js';
 
 /**
  * HeadObject ETag check for a single file. Re-downloads only if ETag changed.
@@ -242,7 +228,17 @@ async function downloadFileIfChanged(
     await downloadFile(s3, bucket, key, localPath, logger, state);
   } catch (err: unknown) {
     if (err instanceof Error && (err.name === 'NotFound' || err.name === '404' || err.name === 'NoSuchKey')) {
-      logger.debug({ key }, 'File not found in S3 (HeadObject), skipping');
+      // If we previously had this file (ETag cached), it was deleted from S3 (e.g., web console).
+      // Delete the local copy to stay in sync.
+      if (state.getEtag(key)) {
+        try {
+          await unlink(localPath);
+          logger.info({ key, localPath }, 'Deleted local file (S3 key removed)');
+        } catch { /* file may already be gone */ }
+        state.deleteEtag(key);
+      } else {
+        logger.debug({ key }, 'File not found in S3 (HeadObject), skipping');
+      }
     } else {
       throw err;
     }
