@@ -1,10 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock fs (sync) before importing the module under test
-vi.mock('fs', () => ({
-  existsSync: vi.fn(() => false),
-}));
-
 // Mock fs/promises before importing the module under test
 vi.mock('fs/promises', () => ({
   mkdir: vi.fn().mockResolvedValue(undefined),
@@ -18,7 +13,6 @@ vi.mock('fs/promises', () => ({
 
 import { incrementalSyncToS3 } from '../session.js';
 import { SyncState } from '../sync-state.js';
-import { existsSync } from 'fs';
 import { readdir, stat } from 'fs/promises';
 import type pino from 'pino';
 
@@ -63,11 +57,6 @@ function getPutObjectKeys(s3: { send: ReturnType<typeof vi.fn> }): string[] {
     .map(([cmd]) => (cmd.input as { Key?: string })?.Key ?? '');
 }
 
-function getDeleteObjectKeys(s3: { send: ReturnType<typeof vi.fn> }): string[] {
-  return (s3.send.mock.calls as [MockCmd][])
-    .filter(([cmd]) => cmd.constructor.name === 'DeleteObjectCommand')
-    .map(([cmd]) => (cmd.input as { Key?: string })?.Key ?? '');
-}
 
 // ── Tests ────────────────────────────────────────────────────────────
 
@@ -76,7 +65,6 @@ describe('incrementalSyncToS3', () => {
 
   const mockReaddir = readdir as unknown as ReturnType<typeof vi.fn>;
   const mockStat = stat as unknown as ReturnType<typeof vi.fn>;
-  const mockExistsSync = existsSync as unknown as ReturnType<typeof vi.fn>;
 
   const basePaths = {
     sessionPath: 'user-1/bot-1/sessions/',
@@ -89,10 +77,9 @@ describe('incrementalSyncToS3', () => {
     state.initialized = true;
     vi.clearAllMocks();
 
-    // Default: readdir returns empty, stat returns something, existsSync returns false
+    // Default: readdir returns empty, stat throws ENOENT
     mockReaddir.mockResolvedValue([]);
     mockStat.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
-    mockExistsSync.mockReturnValue(false);
   });
 
   // ── Test 1: Skips upload for unchanged files ──────────────────────
@@ -251,57 +238,7 @@ describe('incrementalSyncToS3', () => {
     expect(putKeys).toContain('user-1/bot-1/workspace/tg:123/new-file.txt');
   });
 
-  // ── Test 5: Delete sync — deletes S3 object when local file gone ──
-
-  it('deletes S3 object when local file was deleted by agent', async () => {
-    // Pre-populate: file was downloaded from S3 under sessionPath
-    state.recordDownloadedKey(
-      'user-1/bot-1/sessions/',
-      'user-1/bot-1/sessions/obsolete.jsonl',
-    );
-
-    // readdir returns empty (no files in directory)
-    mockReaddir.mockResolvedValue([]);
-
-    // existsSync returns false for the local path → file was deleted
-    mockExistsSync.mockImplementation((path: unknown) => {
-      if (path === '/home/node/.claude/obsolete.jsonl') return false;
-      return false;
-    });
-
-    const s3 = createMockS3Client();
-
-    await incrementalSyncToS3(s3 as never, 'test-bucket', basePaths, mockLogger, state);
-
-    // DeleteObject should be called for the S3 key
-    const deleteKeys = getDeleteObjectKeys(s3);
-    expect(deleteKeys).toContain('user-1/bot-1/sessions/obsolete.jsonl');
-  });
-
-  // ── Test 6: Delete sync — does NOT delete when local file exists ──
-
-  it('does NOT delete S3 object when local file still exists', async () => {
-    // Pre-populate: file was downloaded from S3 under groupPrefix
-    state.recordDownloadedKey(
-      'user-1/bot-1/workspace/tg:123/',
-      'user-1/bot-1/workspace/tg:123/still-here.md',
-    );
-
-    // readdir returns empty (we're not testing uploads here)
-    mockReaddir.mockResolvedValue([]);
-
-    // existsSync returns true for the local path → file still exists
-    mockExistsSync.mockImplementation((path: unknown) => {
-      if (path === '/workspace/group/still-here.md') return true;
-      return false;
-    });
-
-    const s3 = createMockS3Client();
-
-    await incrementalSyncToS3(s3 as never, 'test-bucket', basePaths, mockLogger, state);
-
-    // DeleteObject should NOT be called — file still exists locally
-    const deleteKeys = getDeleteObjectKeys(s3);
-    expect(deleteKeys).not.toContain('user-1/bot-1/workspace/tg:123/still-here.md');
-  });
+  // Upload-side delete sync intentionally NOT implemented:
+  // S3 is source of truth. Local file deletions by agent do NOT propagate to S3.
+  // Files will be restored on next full sync (Path A).
 });

@@ -14,7 +14,6 @@
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command, HeadObjectCommand } from '@aws-sdk/client-s3';
 import type { SyncState } from './sync-state.js';
 
-import { existsSync } from 'fs';
 import { mkdir, readdir, readFile, writeFile, stat, realpath, unlink } from 'fs/promises';
 import { join, dirname, relative } from 'path';
 import type pino from 'pino';
@@ -611,24 +610,8 @@ export async function incrementalSyncToS3(
     await uploadDirectoryIncremental(s3, bucket, join(WORKSPACE_BASE, 'learnings'), paths.learningsPrefix, logger, state);
   }
 
-  // 2. Delete sync: check each downloaded key — if local file no longer exists, delete from S3
-  const prefixToLocalBase: Array<[string, string]> = [
-    [paths.sessionPath, CLAUDE_DIR],
-    [paths.groupPrefix, join(WORKSPACE_BASE, 'group')],
-  ];
-
-  if (paths.learningsPrefix) {
-    prefixToLocalBase.push([paths.learningsPrefix, join(WORKSPACE_BASE, 'learnings')]);
-  }
-
-  for (const [prefix, localBase] of prefixToLocalBase) {
-    for (const key of state.getDownloadedKeys(prefix)) {
-      const rel = key.slice(prefix.length).replace(/^\/+/, '');
-      if (!rel) continue;
-      const localPath = join(localBase, rel);
-      if (!existsSync(localPath)) {
-        await deleteS3Object(s3, bucket, key, logger);
-      }
-    }
-  }
+  // Note: local file deletions are NOT propagated to S3. S3 is the source of
+  // truth — if the agent deletes a file locally, it will be restored on the
+  // next full sync (Path A). Only S3-side deletions propagate to local
+  // (handled in downloadDirectoryIncremental / downloadFileIfChanged).
 }

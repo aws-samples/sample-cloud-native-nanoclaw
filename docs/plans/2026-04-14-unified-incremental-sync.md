@@ -135,14 +135,11 @@ walk local files:
   if file in localSnapshot and unchanged → skip upload
 ```
 
-### Step 2: Delete sync (agent-side deletions → S3)
+### ~~Step 2: Delete sync (agent-side deletions → S3)~~ — REMOVED
 
-```
-for each prefix in downloadedKeys:
-  for each s3Key that was downloaded:
-    compute expected local path
-    if local path does not exist → agent deleted it → DeleteObject from S3
-```
+Local file deletions do **not** propagate to S3. S3 is the source of truth.
+If the agent deletes a file locally, it will be restored on the next full sync (Path A).
+Only S3-side deletions propagate to local (handled by `downloadDirectoryIncremental` and `downloadFileIfChanged`).
 
 ### Step 3: Upload botClaude
 
