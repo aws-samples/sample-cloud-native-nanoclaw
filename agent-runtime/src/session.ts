@@ -12,7 +12,8 @@
  */
 
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
-import { existsSync } from 'fs';
+import type { SyncState } from './sync-state.js';
+
 import { mkdir, readdir, readFile, writeFile, stat, realpath } from 'fs/promises';
 import { join, dirname, relative } from 'path';
 import type pino from 'pino';
@@ -40,19 +41,20 @@ export async function syncFromS3(
   bucket: string,
   paths: SyncPaths,
   logger: pino.Logger,
+  state?: SyncState,
 ): Promise<void> {
   // 1. Download session directory → /home/node/.claude/
-  await downloadDirectory(s3, bucket, paths.sessionPath, CLAUDE_DIR, logger);
+  await downloadDirectory(s3, bucket, paths.sessionPath, CLAUDE_DIR, logger, state);
 
   // 2. Download bot CLAUDE.md → /home/node/.claude/CLAUDE.md
-  await downloadFile(s3, bucket, paths.botClaude, join(CLAUDE_DIR, 'CLAUDE.md'), logger);
+  await downloadFile(s3, bucket, paths.botClaude, join(CLAUDE_DIR, 'CLAUDE.md'), logger, state);
 
   // 3. Download entire group workspace → /workspace/group/
-  await downloadDirectory(s3, bucket, paths.groupPrefix, join(WORKSPACE_BASE, 'group'), logger);
+  await downloadDirectory(s3, bucket, paths.groupPrefix, join(WORKSPACE_BASE, 'group'), logger, state);
 
   // 4. Download learnings → /workspace/learnings/
   if (paths.learningsPrefix) {
-    await downloadDirectory(s3, bucket, paths.learningsPrefix, join(WORKSPACE_BASE, 'learnings'), logger);
+    await downloadDirectory(s3, bucket, paths.learningsPrefix, join(WORKSPACE_BASE, 'learnings'), logger, state);
   }
 }
 
@@ -65,19 +67,20 @@ export async function syncToS3(
   bucket: string,
   paths: SyncPaths,
   logger: pino.Logger,
+  state?: SyncState,
 ): Promise<void> {
   // 1. Upload session directory (Claude Code state)
-  await uploadDirectory(s3, bucket, CLAUDE_DIR, paths.sessionPath, logger);
+  await uploadDirectory(s3, bucket, CLAUDE_DIR, paths.sessionPath, logger, undefined, state);
 
   // 2. Upload bot CLAUDE.md from /home/node/.claude/CLAUDE.md → S3
-  await uploadFile(s3, bucket, join(CLAUDE_DIR, 'CLAUDE.md'), paths.botClaude, logger);
+  await uploadFile(s3, bucket, join(CLAUDE_DIR, 'CLAUDE.md'), paths.botClaude, logger, state);
 
   // 3. Upload entire group workspace → S3
-  await uploadDirectory(s3, bucket, join(WORKSPACE_BASE, 'group'), paths.groupPrefix, logger);
+  await uploadDirectory(s3, bucket, join(WORKSPACE_BASE, 'group'), paths.groupPrefix, logger, undefined, state);
 
   // 4. Upload learnings directory
   if (paths.learningsPrefix) {
-    await uploadDirectory(s3, bucket, join(WORKSPACE_BASE, 'learnings'), paths.learningsPrefix, logger);
+    await uploadDirectory(s3, bucket, join(WORKSPACE_BASE, 'learnings'), paths.learningsPrefix, logger, undefined, state);
   }
 }
 
@@ -147,18 +150,19 @@ export async function syncMemoryOnlyFromS3(
   bucket: string,
   paths: SyncPaths,
   logger: pino.Logger,
+  state?: SyncState,
 ): Promise<void> {
   // Skip step 1 (session directory) — that's the incompatible data
 
   // 2. Download bot CLAUDE.md
-  await downloadFile(s3, bucket, paths.botClaude, join(CLAUDE_DIR, 'CLAUDE.md'), logger);
+  await downloadFile(s3, bucket, paths.botClaude, join(CLAUDE_DIR, 'CLAUDE.md'), logger, state);
 
   // 3. Download group workspace
-  await downloadDirectory(s3, bucket, paths.groupPrefix, join(WORKSPACE_BASE, 'group'), logger);
+  await downloadDirectory(s3, bucket, paths.groupPrefix, join(WORKSPACE_BASE, 'group'), logger, state);
 
   // 4. Download learnings
   if (paths.learningsPrefix) {
-    await downloadDirectory(s3, bucket, paths.learningsPrefix, join(WORKSPACE_BASE, 'learnings'), logger);
+    await downloadDirectory(s3, bucket, paths.learningsPrefix, join(WORKSPACE_BASE, 'learnings'), logger, state);
   }
 }
 
@@ -202,6 +206,7 @@ async function downloadFile(
   key: string,
   localPath: string,
   logger: pino.Logger,
+  state?: SyncState,
 ): Promise<void> {
   try {
     const resp = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
@@ -210,6 +215,9 @@ async function downloadFile(
       const bytes = await resp.Body.transformToByteArray();
       await writeFile(localPath, Buffer.from(bytes));
       logger.debug({ key, localPath }, 'Downloaded file');
+      if (state && resp.ETag) {
+        state.recordEtag(key, resp.ETag);
+      }
     }
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'NoSuchKey') {
@@ -226,6 +234,7 @@ async function downloadDirectory(
   prefix: string,
   localDir: string,
   logger: pino.Logger,
+  state?: SyncState,
 ): Promise<void> {
   let continuationToken: string | undefined;
 
@@ -244,7 +253,14 @@ async function downloadDirectory(
       if (!rel) continue;
       // Skip excluded directories (.git, node_modules, etc.)
       if (isExcludedPath(rel)) continue;
-      await downloadFile(s3, bucket, obj.Key, join(localDir, rel), logger);
+      // Record ETag from ListObjectsV2 response (available without extra call)
+      if (state && obj.ETag) {
+        state.recordEtag(obj.Key, obj.ETag);
+      }
+      if (state) {
+        state.recordDownloadedKey(prefix, obj.Key);
+      }
+      await downloadFile(s3, bucket, obj.Key, join(localDir, rel), logger, state);
     }
 
     continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
@@ -257,11 +273,15 @@ async function uploadFile(
   localPath: string,
   key: string,
   logger: pino.Logger,
+  state?: SyncState,
 ): Promise<void> {
   try {
     const content = await readFile(localPath);
-    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: content }));
+    const resp = await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: content }));
     logger.debug({ key, localPath }, 'Uploaded file');
+    if (state && resp.ETag) {
+      state.recordEtag(key, resp.ETag);
+    }
   } catch (err: unknown) {
     if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'ENOENT') {
       logger.debug({ localPath }, 'Local file not found, skipping upload');
@@ -281,6 +301,7 @@ async function uploadDirectory(
   prefix: string,
   logger: pino.Logger,
   visited?: Set<string>,
+  state?: SyncState,
 ): Promise<void> {
   // Circular symlink protection: track canonical paths already visited
   const canonical = await realpath(localDir).catch(() => localDir);
@@ -298,7 +319,7 @@ async function uploadDirectory(
     const uploadedRels = new Set<string>();
 
     for (const entry of entries) {
-      const fullPath = join(entry.parentPath || entry.path, entry.name);
+      const fullPath = join(entry.parentPath ?? '', entry.name);
       const rel = relative(localDir, fullPath);
 
       // Skip excluded directories (.git, node_modules, etc.)
@@ -306,7 +327,7 @@ async function uploadDirectory(
 
       if (entry.isFile()) {
         uploadedRels.add(rel);
-        await uploadFile(s3, bucket, fullPath, prefix + rel, logger);
+        await uploadFile(s3, bucket, fullPath, prefix + rel, logger, state);
       } else if (entry.isSymbolicLink()) {
         // Symlinks (e.g. skills installed by Claude Code) may point to
         // directories outside the sync root. Resolve and upload the target.
@@ -322,14 +343,14 @@ async function uploadDirectory(
           const targetStat = await stat(realTarget);
           if (targetStat.isFile()) {
             if (!uploadedRels.has(rel)) {
-              await uploadFile(s3, bucket, realTarget, prefix + rel, logger);
+              await uploadFile(s3, bucket, realTarget, prefix + rel, logger, state);
             }
           } else if (targetStat.isDirectory()) {
             // Only recurse if readdir didn't already yield children for this path
             const childPrefix = rel + '/';
             const alreadyTraversed = [...uploadedRels].some((r) => r.startsWith(childPrefix));
             if (!alreadyTraversed) {
-              await uploadDirectory(s3, bucket, realTarget, prefix + rel + '/', logger, seen);
+              await uploadDirectory(s3, bucket, realTarget, prefix + rel + '/', logger, seen, state);
             }
           }
         } catch (err) {
