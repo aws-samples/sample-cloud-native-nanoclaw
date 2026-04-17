@@ -12,11 +12,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.92",
+    "@anthropic-ai/claude-agent-sdk": "0.2.112",
     "@aws-sdk/client-dynamodb": "^3.700.0",
     "@aws-sdk/client-s3": "^3.700.0",
-    "@aws-sdk/client-secrets-manager": "^3.700.0",
     "@aws-sdk/client-scheduler": "^3.700.0",
+    "@aws-sdk/client-secrets-manager": "^3.700.0",
     "@aws-sdk/client-sqs": "^3.700.0",
     "@aws-sdk/client-sts": "^3.700.0",
     "@aws-sdk/lib-dynamodb": "^3.700.0",
@@ -24,9 +24,9 @@
     "@larksuiteoapi/node-sdk": "^1.59.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "cron-parser": "^5.5.0",
+    "docx": "^9.0.0",
     "fastify": "^5.2.0",
     "pino": "^9.6.0",
-    "docx": "^9.0.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
