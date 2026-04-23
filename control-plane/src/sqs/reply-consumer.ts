@@ -236,7 +236,9 @@ async function processReplyMetadata(
       });
     }
 
-    // Update session
+    // Update session — also clears resetPending, since the reset intent has now
+    // been consumed by a successful agent invocation. If the invocation failed
+    // (no newSessionId), the flag persists so the next message still resets.
     if (meta.newSessionId) {
       await putSession({
         botId,
@@ -247,6 +249,7 @@ async function processReplyMetadata(
         status: 'active',
         lastModel: meta.model,
         lastModelProvider: meta.modelProvider as ModelProvider,
+        resetPending: false,
       });
     }
 

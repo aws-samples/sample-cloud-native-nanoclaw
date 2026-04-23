@@ -31,6 +31,7 @@ import {
   getSession,
   touchSessionTask,
   clearSessionTask,
+  setSessionResetPending,
   getTask,
   getRecentMessages,
   checkAndAcquireAgentSlot,
@@ -41,6 +42,12 @@ import {
   listBotMcpConfigs,
   getMcpServer,
 } from '../services/dynamo.js';
+import {
+  parseSlashCommand,
+  replyUnknown,
+  REPLY_RESET,
+  REPLY_HELP,
+} from './slash-commands.js';
 import { getProviderApiKey, getProxyRules } from '../services/secrets.js';
 import { getCachedBot } from '../services/cached-lookups.js';
 import type { Bot } from '@clawbot/shared';
@@ -51,13 +58,15 @@ import { assignTaskForSession, isTaskRunning } from './task-manager.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Detect model/provider change that requires session reset */
+/** Detect conditions that require session reset (force SDK continue:false) */
 export function shouldResetSession(
   session: Session | null,
   currentModel: string | undefined,
   currentProvider: ModelProvider | undefined,
 ): boolean {
   if (!session) return false;
+  // User asked to reset via /clear /reset /new slash command
+  if (session.resetPending) return true;
   if (!session.lastModel && !session.lastModelProvider) return false;
   return session.lastModel !== currentModel || session.lastModelProvider !== currentProvider;
 }
@@ -283,6 +292,39 @@ async function dispatchMessage(
     return;
   }
 
+  // 1b. Slash-command interception — Control Plane handles /clear /reset /new /help
+  //     and unknown /foo locally (no quota, no agent). /context /compact fall through
+  //     but skip group-context prepend and carry an sdkCommand hint for the runtime's
+  //     empty-result fallback.
+  const parsed = parseSlashCommand(payload.content);
+  if (parsed.kind === 'dispatcher') {
+    if (parsed.command === 'help') {
+      logger.info({ botId: payload.botId, groupJid: payload.groupJid, command: parsed.command }, 'Slash command handled');
+      await sendChannelReply(
+        payload.botId, payload.groupJid, payload.channelType,
+        REPLY_HELP, logger, payload.replyContext,
+      );
+      return;
+    }
+    // clear / reset / new — mark session for reset on the next real message
+    await setSessionResetPending(payload.botId, payload.groupJid, true);
+    logger.info({ botId: payload.botId, groupJid: payload.groupJid, command: parsed.command }, 'Slash command handled (session reset queued)');
+    await sendChannelReply(
+      payload.botId, payload.groupJid, payload.channelType,
+      REPLY_RESET, logger, payload.replyContext,
+    );
+    return;
+  }
+  if (parsed.kind === 'unknown') {
+    logger.info({ botId: payload.botId, groupJid: payload.groupJid, command: parsed.command }, 'Unknown slash command');
+    await sendChannelReply(
+      payload.botId, payload.groupJid, payload.channelType,
+      replyUnknown(parsed.command), logger, payload.replyContext,
+    );
+    return;
+  }
+  // parsed.kind === 'sdk' | 'none' fall through to the normal agent flow below.
+
   // 2. Quota checks — load user (auto-provision with defaults if needed)
   const user = await ensureUser(payload.userId);
   if (user.usageTokens >= user.quota.maxMonthlyTokens) {
@@ -314,10 +356,14 @@ async function dispatchMessage(
     // 4. Look up group record for isGroup flag
     const group = await getGroup(payload.botId, payload.groupJid);
 
-    // 4b. Build group chat context — prepend recent messages so agent sees the conversation
-    const groupContext = await buildGroupChatContext(
-      payload.botId, payload.groupJid, !!group?.isGroup, payload.messageId, logger,
-    );
+    // 4b. Build group chat context — prepend recent messages so agent sees the conversation.
+    //     Skip for SDK slash commands (/context, /compact) where group context is noise.
+    const isSdkCommand = parsed.kind === 'sdk';
+    const groupContext = isSdkCommand
+      ? ''
+      : await buildGroupChatContext(
+          payload.botId, payload.groupJid, !!group?.isGroup, payload.messageId, logger,
+        );
     const prompt = groupContext + payload.content;
 
     // 6. Build feishu config (if channel is feishu, includes credential ARN + tool config)
@@ -368,6 +414,7 @@ async function dispatchMessage(
       ...(feishuConfig && { feishu: feishuConfig }),
       ...providerCreds,
       ...(forceNewSession && { forceNewSession: true }),
+      ...(isSdkCommand && { sdkCommand: parsed.command }),
       ...(proxyRules.length > 0 && { proxyRules }),
       ...(bot.toolWhitelist && { toolWhitelist: bot.toolWhitelist }),
       ...(payload.replyContext && { replyContext: payload.replyContext }),

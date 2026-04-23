@@ -159,6 +159,7 @@ describe('dispatch async invoke handling', () => {
   const mockGetSession = vi.fn();
   const mockGetTask = vi.fn();
   const mockGetCachedBot = vi.fn();
+  const mockSetSessionResetPending = vi.fn();
 
   let dispatch: (sqsMessage: SQSMessage, logger: Logger) => Promise<void>;
 
@@ -185,6 +186,8 @@ describe('dispatch async invoke handling', () => {
     mockGetSession.mockReset();
     mockGetTask.mockReset();
     mockGetCachedBot.mockReset();
+    mockSetSessionResetPending.mockReset();
+    mockSetSessionResetPending.mockResolvedValue(undefined);
     (mockLogger.info as ReturnType<typeof vi.fn>).mockReset();
     (mockLogger.error as ReturnType<typeof vi.fn>).mockReset();
 
@@ -219,6 +222,7 @@ describe('dispatch async invoke handling', () => {
       getTask: mockGetTask,
       checkAndAcquireAgentSlot: mockCheckAndAcquireAgentSlot,
       releaseAgentSlot: mockReleaseAgentSlot,
+      setSessionResetPending: mockSetSessionResetPending,
     }));
 
     vi.doMock('../services/cached-lookups.js', () => ({
@@ -309,6 +313,92 @@ describe('dispatch async invoke handling', () => {
 
     expect((mockLogger.error as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
   });
+
+  // ── Slash command interception ─────────────────────────────────────────────
+
+  function slashPayload(content: string): SqsInboundPayload {
+    return {
+      type: 'inbound_message',
+      botId: 'bot-1',
+      groupJid: 'tg:123',
+      userId: 'user-1',
+      messageId: 'msg-slash',
+      content,
+      channelType: 'telegram',
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  it.each(['/clear', '/reset', '/new'])(
+    '%s: queues session reset, replies, does not invoke agent or consume quota',
+    async (cmd) => {
+      await dispatch(makeSqsMessage(slashPayload(cmd)), mockLogger);
+
+      expect(mockSetSessionResetPending).toHaveBeenCalledWith('bot-1', 'tg:123', true);
+      expect(mockSendReply).toHaveBeenCalledOnce();
+      expect(mockSendReply.mock.calls[0][1]).toBe('会话已重置');
+
+      // No quota / slot / agent invocation for dispatcher-handled commands
+      expect(mockEnsureUser).not.toHaveBeenCalled();
+      expect(mockCheckAndAcquireAgentSlot).not.toHaveBeenCalled();
+      expect(mockSend).not.toHaveBeenCalled();
+    },
+  );
+
+  it('/help: replies with command list, does not invoke agent', async () => {
+    await dispatch(makeSqsMessage(slashPayload('/help')), mockLogger);
+
+    expect(mockSendReply).toHaveBeenCalledOnce();
+    expect(mockSendReply.mock.calls[0][1]).toContain('/clear');
+    expect(mockSendReply.mock.calls[0][1]).toContain('/compact');
+    expect(mockSetSessionResetPending).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('/foobar: replies with unsupported notice, does not invoke agent or set reset', async () => {
+    await dispatch(makeSqsMessage(slashPayload('/foobar')), mockLogger);
+
+    expect(mockSendReply).toHaveBeenCalledOnce();
+    expect(mockSendReply.mock.calls[0][1]).toBe('不支持的命令: /foobar');
+    expect(mockSetSessionResetPending).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('/tmp/foo.log: path-like input reaches the agent as a normal prompt', async () => {
+    mockAgentResult({ status: 'accepted', result: null });
+
+    await dispatch(makeSqsMessage(slashPayload('/tmp/foo.log please inspect')), mockLogger);
+
+    // Normal flow — quota/slot/agent all invoked; no reset queued, no unsupported reply
+    expect(mockEnsureUser).toHaveBeenCalled();
+    expect(mockCheckAndAcquireAgentSlot).toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledOnce();
+    expect(mockSetSessionResetPending).not.toHaveBeenCalled();
+    expect(mockSendReply).not.toHaveBeenCalled();
+  });
+
+  it('/compact: passes through with sdkCommand set and no group context', async () => {
+    mockAgentResult({ status: 'accepted', result: null });
+
+    await dispatch(makeSqsMessage(slashPayload('/compact')), mockLogger);
+
+    expect(mockSend).toHaveBeenCalledOnce();
+    const command = mockSend.mock.calls[0][0];
+    const sent = JSON.parse(Buffer.from(command.payload).toString()) as InvocationPayload;
+    expect(sent.sdkCommand).toBe('compact');
+    // Prompt is the raw command — no group-chat context prepended for SDK slash commands
+    expect(sent.prompt).toBe('/compact');
+  });
+
+  it('/context: passes through with sdkCommand=context', async () => {
+    mockAgentResult({ status: 'accepted', result: null });
+
+    await dispatch(makeSqsMessage(slashPayload('/context')), mockLogger);
+
+    const command = mockSend.mock.calls[0][0];
+    const sent = JSON.parse(Buffer.from(command.payload).toString()) as InvocationPayload;
+    expect(sent.sdkCommand).toBe('context');
+  });
 });
 
 // ── shouldResetSession unit tests ───────────────────────────────────────────
@@ -377,5 +467,28 @@ describe('shouldResetSession', () => {
 
   it('returns true when provider becomes undefined', () => {
     expect(shouldResetSession(baseSession, 'claude-sonnet', undefined)).toBe(true);
+  });
+
+  it('returns true when resetPending is set (from /clear) even if model/provider match', () => {
+    const resetSession: Session = { ...baseSession, resetPending: true };
+    expect(shouldResetSession(resetSession, 'claude-sonnet', 'bedrock')).toBe(true);
+  });
+
+  it('returns false when resetPending is false and model/provider match', () => {
+    const session: Session = { ...baseSession, resetPending: false };
+    expect(shouldResetSession(session, 'claude-sonnet', 'bedrock')).toBe(false);
+  });
+
+  it('returns true when resetPending is set on a session with no prior model (first /clear)', () => {
+    // Locks in the ordering at dispatcher.ts: the resetPending check must
+    // short-circuit BEFORE the `!lastModel && !lastModelProvider` guard,
+    // so that /clear works on a fresh session that has no model recorded yet.
+    const fresh: Session = {
+      ...baseSession,
+      lastModel: undefined,
+      lastModelProvider: undefined,
+      resetPending: true,
+    };
+    expect(shouldResetSession(fresh, 'claude-sonnet', 'bedrock')).toBe(true);
   });
 });

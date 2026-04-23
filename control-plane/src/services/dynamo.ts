@@ -970,6 +970,7 @@ export async function putSession(session: Session): Promise<void> {
   const pk = `${session.botId}#${session.groupJid}`;
   // Use UpdateCommand to preserve task registry fields (taskArn, taskIp, taskStatus).
   // PutCommand would overwrite the entire item, clearing fields not in the session object.
+  const hasResetPending = session.resetPending !== undefined;
   await client.send(
     new UpdateCommand({
       TableName: config.tables.sessions,
@@ -977,7 +978,8 @@ export async function putSession(session: Session): Promise<void> {
       UpdateExpression:
         'SET botId = :bid, groupJid = :gid, agentcoreSessionId = :sid, s3SessionPath = :sp, lastActiveAt = :la, #st = :status'
         + (session.lastModel ? ', lastModel = :lm' : '')
-        + (session.lastModelProvider ? ', lastModelProvider = :lmp' : ''),
+        + (session.lastModelProvider ? ', lastModelProvider = :lmp' : '')
+        + (hasResetPending ? ', resetPending = :rp' : ''),
       ExpressionAttributeNames: { '#st': 'status' },
       ExpressionAttributeValues: {
         ':bid': session.botId,
@@ -988,6 +990,32 @@ export async function putSession(session: Session): Promise<void> {
         ':status': session.status,
         ...(session.lastModel && { ':lm': session.lastModel }),
         ...(session.lastModelProvider && { ':lmp': session.lastModelProvider }),
+        ...(hasResetPending && { ':rp': !!session.resetPending }),
+      },
+    }),
+  );
+}
+
+/**
+ * Toggle the resetPending flag on a Session record without touching any other
+ * field. Used by the /clear /reset /new slash commands in the dispatcher.
+ * Creates the record row if it does not yet exist (first-ever user message).
+ */
+export async function setSessionResetPending(
+  botId: string,
+  groupJid: string,
+  value: boolean,
+): Promise<void> {
+  const pk = `${botId}#${groupJid}`;
+  await client.send(
+    new UpdateCommand({
+      TableName: config.tables.sessions,
+      Key: { pk, sk: 'current' },
+      UpdateExpression: 'SET botId = :bid, groupJid = :gid, resetPending = :rp',
+      ExpressionAttributeValues: {
+        ':bid': botId,
+        ':gid': groupJid,
+        ':rp': value,
       },
     }),
   );

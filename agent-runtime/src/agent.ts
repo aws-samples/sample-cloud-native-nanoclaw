@@ -615,8 +615,16 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
   );
 
   // Use lastAssistantText as fallback when SDK result is empty
-  // (happens when the final turn is a tool call, not text)
-  const finalResult = lastResult || lastAssistantText;
+  // (happens when the final turn is a tool call, not text).
+  // For SDK slash commands (/context, /compact) the SDK may finish without any
+  // assistant-level text at all — surface a canned confirmation so the user
+  // sees the command actually did something.
+  let finalResult = lastResult || lastAssistantText;
+  if (!finalResult && params.payload.sdkCommand) {
+    finalResult = params.payload.sdkCommand === 'compact'
+      ? '✓ 对话历史已压缩'
+      : '✓ 上下文信息已更新';
+  }
 
   return {
     status: 'success',

@@ -216,6 +216,12 @@ export interface Session {
   lastInvocationAt?: string;
   /** SQS receipt handle for deferred inbound message deletion (survives CP restart) */
   pendingReceiptHandle?: string;
+  /**
+   * Set by /clear /reset /new slash commands. Consumed by shouldResetSession
+   * on the next real message (forces SDK continue:false) and cleared by the
+   * reply consumer once a successful invocation updates lastModel.
+   */
+  resetPending?: boolean;
 }
 
 // --- SQS Message Payloads ---
@@ -294,6 +300,12 @@ export interface InvocationPayload {
   skills?: string[];
   mcpConfigs?: ResolvedMcpConfig[];
   replyContext?: SqsReplyContext;
+  /**
+   * SDK-level slash command the user invoked (/context, /compact). When set,
+   * agent-runtime substitutes a fallback reply if the SDK produces no text
+   * output (e.g. the command ran as a local_command_output).
+   */
+  sdkCommand?: 'context' | 'compact';
 }
 
 /** Proxy rule passed through invocation payload (secrets included). */
