@@ -262,19 +262,25 @@ async function buildProxyRules(
 
 // ── Main dispatch entry point ───────────────────────────────────────────────
 
+/**
+ * Returns true when the message was fully handled locally (slash command) and
+ * the SQS message should be deleted immediately — no agent invocation means
+ * no reply-consumer will come to delete it later.
+ */
 export async function dispatch(
   sqsMessage: SQSMessage,
   logger: Logger,
-): Promise<void> {
+): Promise<{ deleteImmediately?: boolean }> {
   const payload: SqsPayload = JSON.parse(sqsMessage.Body!);
 
   if (payload.type === 'inbound_message') {
-    await dispatchMessage(payload, logger);
+    return await dispatchMessage(payload, logger);
   } else if (payload.type === 'scheduled_task') {
     await dispatchTask(payload, logger);
   } else {
     logger.warn({ payload }, 'Unknown SQS payload type');
   }
+  return {};
 }
 
 // ── Inbound message dispatch ────────────────────────────────────────────────
@@ -282,14 +288,14 @@ export async function dispatch(
 async function dispatchMessage(
   payload: SqsInboundPayload,
   logger: Logger,
-): Promise<void> {
+): Promise<{ deleteImmediately?: boolean }> {
   const startTime = Date.now();
 
   // 1. Load bot config
   const bot = await getCachedBot(payload.botId);
   if (!bot || bot.status !== 'active') {
     logger.info({ botId: payload.botId }, 'Bot not found or inactive, skipping dispatch');
-    return;
+    return { deleteImmediately: true };
   }
 
   // 1b. Slash-command interception — Control Plane handles /clear /reset /new /help
@@ -304,7 +310,7 @@ async function dispatchMessage(
         payload.botId, payload.groupJid, payload.channelType,
         REPLY_HELP, logger, payload.replyContext,
       );
-      return;
+      return { deleteImmediately: true };
     }
     // clear / reset / new — mark session for reset on the next real message
     await setSessionResetPending(payload.botId, payload.groupJid, true);
@@ -313,7 +319,7 @@ async function dispatchMessage(
       payload.botId, payload.groupJid, payload.channelType,
       REPLY_RESET, logger, payload.replyContext,
     );
-    return;
+    return { deleteImmediately: true };
   }
   if (parsed.kind === 'unknown') {
     logger.info({ botId: payload.botId, groupJid: payload.groupJid, command: parsed.command }, 'Unknown slash command');
@@ -321,7 +327,7 @@ async function dispatchMessage(
       payload.botId, payload.groupJid, payload.channelType,
       replyUnknown(parsed.command), logger, payload.replyContext,
     );
-    return;
+    return { deleteImmediately: true };
   }
   // parsed.kind === 'sdk' | 'none' fall through to the normal agent flow below.
 
@@ -341,7 +347,7 @@ async function dispatchMessage(
       logger,
       payload.replyContext,
     );
-    return;
+    return { deleteImmediately: true };
   }
 
   // 3. Acquire concurrency slot (atomic DynamoDB increment)
@@ -436,12 +442,12 @@ async function dispatchMessage(
 
     if (result.status !== 'accepted') {
       // Ack-level failure (e.g. ARN not configured, AgentCore unreachable)
-      logger.error({ botId: payload.botId, error: result.error }, 'Agent invocation rejected');
+      logger.error({ botId: payload.botId, status: result.status, error: result.error }, 'Agent invocation rejected');
       await sendChannelReply(
         payload.botId,
         payload.groupJid,
         payload.channelType,
-        `Failed to start processing: ${result.error || 'Unknown error'}`,
+        `Failed to start processing: ${result.error || `Unexpected response (status=${result.status ?? 'none'})`}`,
         logger,
         payload.replyContext,
       );
@@ -463,6 +469,7 @@ async function dispatchMessage(
       logger.error(err, 'Failed to release agent slot'),
     );
   }
+  return {};
 }
 
 // ── Scheduled task dispatch ─────────────────────────────────────────────────
@@ -661,9 +668,37 @@ class AgentCoreInvoker implements AgentInvoker {
         }),
       );
 
-      const resultText = (await response.response?.transformToString()) || '{}';
-      const body = JSON.parse(resultText) as InvocationResult & { output?: InvocationResult };
-      return body.output ?? body;
+      const resultText = (await response.response?.transformToString()) || '';
+      const statusCode = response.statusCode;
+
+      if (!resultText) {
+        logger.error(
+          { botId: payload.botId, statusCode },
+          'AgentCore returned empty response body',
+        );
+        return { status: 'error', result: null, error: `AgentCore returned empty response (HTTP ${statusCode ?? 'unknown'})` };
+      }
+
+      const body = JSON.parse(resultText) as Record<string, unknown>;
+      const result = (body.output ?? body) as Record<string, unknown>;
+
+      if (result.status === 'accepted' || result.status === 'success') {
+        return result as unknown as InvocationResult;
+      }
+
+      // AgentCore/runtime returned a non-success response — extract error from
+      // whichever field is present (our format uses `error`, AWS uses `message`
+      // or `errorMessage`)
+      const errorMsg = result.error || result.errorMessage || result.message || '';
+      logger.error(
+        { botId: payload.botId, statusCode, rawResponse: resultText.slice(0, 500) },
+        'AgentCore invocation returned non-success response',
+      );
+      return {
+        status: 'error',
+        result: null,
+        error: (errorMsg as string) || `AgentCore returned HTTP ${statusCode ?? 'unknown'}: ${resultText.slice(0, 200)}`,
+      };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       logger.error({ err }, 'AgentCore runtime invocation failed');

@@ -118,6 +118,79 @@ describe('invokeAgent', () => {
     expect(result.error).toContain('Connection refused');
   });
 
+  it('returns error with statusCode when response body is empty', async () => {
+    mockSend.mockResolvedValue({
+      response: { transformToString: () => Promise.resolve('') },
+      statusCode: 500,
+    });
+
+    const result = await invokeAgent(basePayload, mockLogger);
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('empty response');
+    expect(result.error).toContain('500');
+  });
+
+  it('returns error with statusCode when response.response is undefined', async () => {
+    mockSend.mockResolvedValue({
+      statusCode: 503,
+    });
+
+    const result = await invokeAgent(basePayload, mockLogger);
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('empty response');
+    expect(result.error).toContain('503');
+  });
+
+  it('extracts errorMessage from AWS-style error response', async () => {
+    mockSend.mockResolvedValue({
+      response: {
+        transformToString: () => Promise.resolve(JSON.stringify({
+          errorType: 'RuntimeError',
+          errorMessage: 'Session creation timed out',
+        })),
+      },
+      statusCode: 500,
+    });
+
+    const result = await invokeAgent(basePayload, mockLogger);
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Session creation timed out');
+  });
+
+  it('extracts message from generic error response', async () => {
+    mockSend.mockResolvedValue({
+      response: {
+        transformToString: () => Promise.resolve(JSON.stringify({
+          message: 'Internal server error',
+        })),
+      },
+      statusCode: 500,
+    });
+
+    const result = await invokeAgent(basePayload, mockLogger);
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Internal server error');
+  });
+
+  it('includes raw response when no standard error field found', async () => {
+    mockSend.mockResolvedValue({
+      response: {
+        transformToString: () => Promise.resolve(JSON.stringify({ fault: 'unknown' })),
+      },
+      statusCode: 502,
+    });
+
+    const result = await invokeAgent(basePayload, mockLogger);
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('502');
+    expect(result.error).toContain('fault');
+  });
+
   it('returns error when runtime ARN is not configured', async () => {
     vi.doMock('../config.js', () => ({
       config: {
@@ -161,7 +234,7 @@ describe('dispatch async invoke handling', () => {
   const mockGetCachedBot = vi.fn();
   const mockSetSessionResetPending = vi.fn();
 
-  let dispatch: (sqsMessage: SQSMessage, logger: Logger) => Promise<void>;
+  let dispatch: (sqsMessage: SQSMessage, logger: Logger) => Promise<{ deleteImmediately?: boolean }>;
 
   function makeSqsMessage(body: SqsInboundPayload | SqsTaskPayload): SQSMessage {
     return { Body: JSON.stringify(body) } as SQSMessage;
@@ -330,10 +403,11 @@ describe('dispatch async invoke handling', () => {
   }
 
   it.each(['/clear', '/reset', '/new'])(
-    '%s: queues session reset, replies, does not invoke agent or consume quota',
+    '%s: queues session reset, replies, and signals immediate SQS delete',
     async (cmd) => {
-      await dispatch(makeSqsMessage(slashPayload(cmd)), mockLogger);
+      const result = await dispatch(makeSqsMessage(slashPayload(cmd)), mockLogger);
 
+      expect(result.deleteImmediately).toBe(true);
       expect(mockSetSessionResetPending).toHaveBeenCalledWith('bot-1', 'tg:123', true);
       expect(mockSendReply).toHaveBeenCalledOnce();
       expect(mockSendReply.mock.calls[0][1]).toBe('会话已重置');
@@ -345,9 +419,10 @@ describe('dispatch async invoke handling', () => {
     },
   );
 
-  it('/help: replies with command list, does not invoke agent', async () => {
-    await dispatch(makeSqsMessage(slashPayload('/help')), mockLogger);
+  it('/help: replies with command list and signals immediate SQS delete', async () => {
+    const result = await dispatch(makeSqsMessage(slashPayload('/help')), mockLogger);
 
+    expect(result.deleteImmediately).toBe(true);
     expect(mockSendReply).toHaveBeenCalledOnce();
     expect(mockSendReply.mock.calls[0][1]).toContain('/clear');
     expect(mockSendReply.mock.calls[0][1]).toContain('/compact');

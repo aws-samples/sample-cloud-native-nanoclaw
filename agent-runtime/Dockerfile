@@ -22,7 +22,9 @@ COPY agent-runtime/tsconfig.json agent-runtime/
 COPY tsconfig.base.json ./
 
 # Install all dependencies
-RUN npm ci --workspace=@clawbot/shared --workspace=@clawbot/agent-runtime
+RUN npm ci --workspace=@clawbot/shared --workspace=@clawbot/agent-runtime \
+    # Remove musl native binary — container is Debian (glibc), SDK falls back to glibc variant
+    && rm -rf node_modules/@anthropic-ai/claude-agent-sdk-linux-*-musl
 
 # Build shared first, then agent-runtime
 COPY shared/ shared/

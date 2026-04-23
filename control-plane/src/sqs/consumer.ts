@@ -188,7 +188,17 @@ async function consumeLoop(logger: Logger): Promise<void> {
         // - AgentCore: prevents dispatching to different microVMs simultaneously
         // - ECS dedicated task: prevents assigning multiple tasks to same session
         dispatch(msg, logger)
-          .then(async () => {
+          .then(async (result) => {
+            // Locally-handled messages (slash commands, quota errors) have no
+            // agent invocation — delete immediately so FIFO group isn't blocked.
+            if (result?.deleteImmediately) {
+              sqs.send(new DeleteMessageCommand({
+                QueueUrl: config.queues.messages,
+                ReceiptHandle: handle,
+              })).catch(() => {});
+              return;
+            }
+
             if (groupKey) {
               // Store receipt handle in DynamoDB (survives control-plane restarts).
               // Reply-consumer reads it to delete the inbound message when agent completes.
