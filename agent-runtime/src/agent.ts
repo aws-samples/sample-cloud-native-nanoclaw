@@ -19,7 +19,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import fs, { rmSync, mkdirSync, cpSync } from 'fs';
+import fs from 'fs';
 import { writeFile, mkdir } from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -33,8 +33,7 @@ import {
 import type pino from 'pino';
 import type { InvocationPayload, InvocationResult, Attachment, ResolvedMcpConfig } from '@clawbot/shared';
 import {
-  syncFromS3, syncToS3,
-  clearSessionDirectory, syncMemoryOnlyFromS3,
+  syncFromS3,
   incrementalSyncFromS3, incrementalSyncToS3,
   downloadSkills, type SyncPaths,
 } from './session.js';
@@ -123,28 +122,6 @@ function buildDynamicMcpServers(
   );
 }
 
-// Session switch detection — track which bot+group we last served
-let currentSessionKey: string | undefined;
-
-const BUNDLED_SKILLS_DIR = '/app/bundled-skills';
-
-async function cleanLocalWorkspace(): Promise<void> {
-  // Clean all workspace directories
-  for (const dir of ['/workspace/group', '/workspace/learnings', '/workspace/reference']) {
-    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
-    try { mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
-  }
-  // Clean entire ~/.claude/ (including skills/ — may contain previous user's S3 skills)
-  const claudeDir = '/home/node/.claude';
-  try { rmSync(claudeDir, { recursive: true, force: true }); } catch { /* ignore */ }
-  try { mkdirSync(claudeDir, { recursive: true }); } catch { /* ignore */ }
-  // Restore bundled skills from read-only backup
-  if (fs.existsSync(BUNDLED_SKILLS_DIR)) {
-    cpSync(BUNDLED_SKILLS_DIR, path.join(claudeDir, 'skills'), { recursive: true });
-  } else {
-    console.warn('Bundled skills directory not found at', BUNDLED_SKILLS_DIR);
-  }
-}
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
@@ -214,20 +191,12 @@ async function _handleInvocation(
 ): Promise<InvocationResult> {
   const { botId, botName, groupJid, userId, prompt, sessionPath, memoryPaths } = payload;
 
-  // Session switch detection + three-path sync selection
-  const sessionKey = `${botId}#${groupJid}`;
+  // forceNewSession only affects the SDK's `continue` flag (see runAgentQuery);
+  // it does NOT trigger local/S3 cleanup — the microVM (AgentCore) or dedicated
+  // task (ECS) is 1:1 bound to this (botId, groupJid), so no cross-session
+  // state leakage is possible. SDK `continue: false` alone is sufficient to
+  // start a fresh conversation on model/provider change.
   const forceNewSession = !!payload.forceNewSession;
-  const isSessionContinuation = syncState.initialized
-    && currentSessionKey === sessionKey
-    && !forceNewSession;
-
-  if (currentSessionKey && currentSessionKey !== sessionKey) {
-    logger.info(
-      { previousSession: currentSessionKey, newSession: sessionKey },
-      'Session switch detected',
-    );
-  }
-  currentSessionKey = sessionKey;
 
   // 1. Get scoped credentials (STS ABAC — userId + botId tags)
   logger.info({ botId, userId }, 'Acquiring scoped credentials');
@@ -241,30 +210,17 @@ async function _handleInvocation(
     learningsPrefix: memoryPaths.learnings,
   };
 
-  // 2. Three-path sync from S3 → local workspace
-  if (forceNewSession) {
-    // Path C: model/provider changed → full clean + session reset
-    logger.info({ botId, groupJid }, 'Path C: forceNewSession — full clean + session reset');
-    await cleanLocalWorkspace();
-    if (payload.skills?.length) {
-      await downloadSkills(s3, SESSION_BUCKET, payload.skills, logger);
-    }
-    await clearSessionDirectory(s3, SESSION_BUCKET, sessionPath, logger);
-    syncState.clearPrefix(sessionPath);
-    syncState.clearDownloadedKeys(sessionPath);
-    await syncMemoryOnlyFromS3(s3, SESSION_BUCKET, syncPaths, logger, syncState);
-  } else if (isSessionContinuation) {
-    // Path B: same session, subsequent request → incremental
-    logger.info({ botId, groupJid }, 'Path B: incremental sync (session continuation)');
+  // 2. Two-path sync from S3 → local workspace
+  if (syncState.initialized) {
+    // Subsequent request on the same microVM/task → incremental
+    logger.info({ botId, groupJid }, 'Incremental sync (session continuation)');
     if (payload.skills?.length) {
       await downloadSkills(s3, SESSION_BUCKET, payload.skills, logger);
     }
     await incrementalSyncFromS3(s3, SESSION_BUCKET, syncPaths, logger, syncState);
   } else {
-    // Path A: first request or session switch → full clean + full sync
-    logger.info({ botId, groupJid }, 'Path A: full sync (first request or session switch)');
-    syncState.reset();
-    await cleanLocalWorkspace();
+    // First request on this microVM/task → full sync
+    logger.info({ botId, groupJid }, 'Full sync (first request)');
     if (payload.skills?.length) {
       await downloadSkills(s3, SESSION_BUCKET, payload.skills, logger);
     }
@@ -302,7 +258,8 @@ async function _handleInvocation(
   // Ensure reference files available
   copyIfMissing(TEMPLATES, 'CODING_REFERENCE.md', '/workspace/reference');
 
-  // 3b. Ensure settings.json exists (may be lost after session sync/reset)
+  // 3b. Ensure settings.json exists (defensive — image ships one, but a prior
+  //     S3 sync may have overwritten or deleted it)
   const SETTINGS_PATH = '/home/node/.claude/settings.json';
   if (!fs.existsSync(SETTINGS_PATH)) {
     fs.writeFileSync(SETTINGS_PATH, JSON.stringify({
