@@ -243,6 +243,101 @@ describe('session sync with SyncState', () => {
     });
   });
 
+  describe('syncFromS3 skips non-current session JSONLs', () => {
+    it('keeps only the most-recent .jsonl per projects/<hash>/ directory', async () => {
+      const responses = new Map<string, unknown>();
+
+      // Session listing: 3 JSONLs for the same project (same cwd hash),
+      // plus sessions-index.json that should always be downloaded.
+      // (settings.json is intentionally filtered by isExcludedPath and never synced.)
+      responses.set('list:user-1/bot-1/sessions/', {
+        Contents: [
+          { Key: 'user-1/bot-1/sessions/projects/-workspace-group/sessions-index.json', ETag: '"idx"', LastModified: new Date('2026-04-20T00:00:00Z') },
+          { Key: 'user-1/bot-1/sessions/projects/-workspace-group/old-session.jsonl', ETag: '"old"', LastModified: new Date('2026-04-18T00:00:00Z') },
+          { Key: 'user-1/bot-1/sessions/projects/-workspace-group/mid-session.jsonl', ETag: '"mid"', LastModified: new Date('2026-04-19T12:00:00Z') },
+          { Key: 'user-1/bot-1/sessions/projects/-workspace-group/new-session.jsonl', ETag: '"new"', LastModified: new Date('2026-04-20T08:00:00Z') },
+        ],
+        IsTruncated: false,
+      });
+      responses.set('get:user-1/bot-1/sessions/projects/-workspace-group/sessions-index.json', makeGetResponse('"idx"'));
+      responses.set('get:user-1/bot-1/sessions/projects/-workspace-group/new-session.jsonl', makeGetResponse('"new"'));
+
+      responses.set('list:user-1/bot-1/workspace/tg:123/', { Contents: [], IsTruncated: false });
+
+      const s3 = createMockS3Client(responses);
+
+      await syncFromS3(
+        s3 as never,
+        'test-bucket',
+        {
+          sessionPath: 'user-1/bot-1/sessions/',
+          botClaude: 'user-1/bot-1/CLAUDE.md',
+          groupPrefix: 'user-1/bot-1/workspace/tg:123/',
+        },
+        mockLogger,
+        state,
+      );
+
+      // Only the newest JSONL should be downloaded
+      const getCalls = (s3.send as ReturnType<typeof vi.fn>).mock.calls
+        .map(([cmd]) => cmd)
+        .filter((cmd: { constructor: { name: string } }) => cmd.constructor.name === 'GetObjectCommand')
+        .map((cmd: { input: { Key: string } }) => cmd.input.Key);
+
+      expect(getCalls).toContain('user-1/bot-1/sessions/projects/-workspace-group/sessions-index.json');
+      expect(getCalls).toContain('user-1/bot-1/sessions/projects/-workspace-group/new-session.jsonl');
+      expect(getCalls).not.toContain('user-1/bot-1/sessions/projects/-workspace-group/old-session.jsonl');
+      expect(getCalls).not.toContain('user-1/bot-1/sessions/projects/-workspace-group/mid-session.jsonl');
+
+      // Downloaded keys should exclude the stale JSONLs
+      const sessionKeys = state.getDownloadedKeys('user-1/bot-1/sessions/');
+      expect(sessionKeys).not.toContain('user-1/bot-1/sessions/projects/-workspace-group/old-session.jsonl');
+      expect(sessionKeys).not.toContain('user-1/bot-1/sessions/projects/-workspace-group/mid-session.jsonl');
+      expect(sessionKeys).toContain('user-1/bot-1/sessions/projects/-workspace-group/new-session.jsonl');
+    });
+
+    it('keeps the latest JSONL independently for each projects/<hash>/', async () => {
+      const responses = new Map<string, unknown>();
+
+      responses.set('list:user-1/bot-1/sessions/', {
+        Contents: [
+          { Key: 'user-1/bot-1/sessions/projects/hashA/a-old.jsonl', ETag: '"a-old"', LastModified: new Date('2026-04-18T00:00:00Z') },
+          { Key: 'user-1/bot-1/sessions/projects/hashA/a-new.jsonl', ETag: '"a-new"', LastModified: new Date('2026-04-19T00:00:00Z') },
+          { Key: 'user-1/bot-1/sessions/projects/hashB/b-old.jsonl', ETag: '"b-old"', LastModified: new Date('2026-04-15T00:00:00Z') },
+          { Key: 'user-1/bot-1/sessions/projects/hashB/b-new.jsonl', ETag: '"b-new"', LastModified: new Date('2026-04-20T00:00:00Z') },
+        ],
+        IsTruncated: false,
+      });
+      responses.set('get:user-1/bot-1/sessions/projects/hashA/a-new.jsonl', makeGetResponse('"a-new"'));
+      responses.set('get:user-1/bot-1/sessions/projects/hashB/b-new.jsonl', makeGetResponse('"b-new"'));
+      responses.set('list:user-1/bot-1/workspace/tg:123/', { Contents: [], IsTruncated: false });
+
+      const s3 = createMockS3Client(responses);
+
+      await syncFromS3(
+        s3 as never,
+        'test-bucket',
+        {
+          sessionPath: 'user-1/bot-1/sessions/',
+          botClaude: 'user-1/bot-1/CLAUDE.md',
+          groupPrefix: 'user-1/bot-1/workspace/tg:123/',
+        },
+        mockLogger,
+        state,
+      );
+
+      const getCalls = (s3.send as ReturnType<typeof vi.fn>).mock.calls
+        .map(([cmd]) => cmd)
+        .filter((cmd: { constructor: { name: string } }) => cmd.constructor.name === 'GetObjectCommand')
+        .map((cmd: { input: { Key: string } }) => cmd.input.Key);
+
+      expect(getCalls).toContain('user-1/bot-1/sessions/projects/hashA/a-new.jsonl');
+      expect(getCalls).toContain('user-1/bot-1/sessions/projects/hashB/b-new.jsonl');
+      expect(getCalls).not.toContain('user-1/bot-1/sessions/projects/hashA/a-old.jsonl');
+      expect(getCalls).not.toContain('user-1/bot-1/sessions/projects/hashB/b-old.jsonl');
+    });
+  });
+
   describe('syncFromS3 without state (backward compat)', () => {
     it('works without state parameter', async () => {
       const responses = new Map<string, unknown>();

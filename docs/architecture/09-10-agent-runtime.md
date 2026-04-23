@@ -80,16 +80,22 @@ clawbot-agent 容器 (ARM64, node:22-slim)
 │   └── 验证: validateCron/validateInterval/validateOnce
 │
 ├── S3 Client (Scoped via STS ABAC)
-│   ├── 启动时: syncFromS3 — session + bot CLAUDE.md + group CLAUDE.md + learnings
-│   └── 结束时: syncToS3 — session + bot CLAUDE.md + group CLAUDE.md + learnings
+│   ├── 首次请求: syncFromS3 — 全量下载 session + bot CLAUDE.md + group + learnings
+│   │              （session 目录只下载每个 projects/<hash>/ 下最新的 .jsonl，
+│   │               历次 model 切换遗留的旧 JSONL 被跳过以省下载成本）
+│   ├── 后续请求: incrementalSyncFromS3 — 跳过 session 目录，基于 ETag 增量同步记忆文件
+│   └── 结束时:   incrementalSyncToS3   — 基于 mtime+size 快照上传变更文件
 │
 ├── 系统依赖
 │   ├── Chromium (agent-browser 浏览器自动化)
 │   ├── git, curl (Agent Bash 工具需要)
 │   └── agent-browser CLI (全局安装)
 │
-├── Session 切换检测
-│   └── 同一 warm container 服务不同 bot/group 时自动清理 workspace
+├── Session 绑定不变量
+│   └── 一个 microVM（AgentCore）/ Fargate task（ECS）永远只服务一个 (botId, groupJid)。
+│      AgentCore 按 runtimeSessionId=${botId}---${groupJid} 路由；ECS 模式由 Task Manager
+│      保证专属 task。因此无需"session 切换"清理逻辑；model/provider 变更只需给 SDK
+│      传 continue:false，旧 session JSONL 保留在本地/S3 也不会干扰。
 │
 └── 文件系统布局
     /etc/claude-code/
@@ -269,76 +275,60 @@ export interface InvocationResult {
   error?: string;
 }
 
-// 按 session 维度跟踪状态，防止 microVM 被 AgentCore 复用给不同 session 时污染
-// 关键假设: AgentCore 当前保证 1 microVM = 1 runtimeSessionId。
-// 此处用 sessionKey 防御该假设被破坏的情况。
-let currentSessionKey: string | null = null;     // "{botId}#{groupJid}"
-let scopedClients: ScopedClients | null = null;
+// 进程级同步状态：首次请求后 initialized=true，用于区分全量 vs 增量同步。
+// 不需要 sessionKey 追踪——AgentCore (runtimeSessionId) 和 ECS Task Manager 都保证
+// 一个 microVM/task 永远只服务一个 (botId, groupJid)，跨 session 污染不可能发生。
+import { syncState } from './sync-state.js';
 
 export async function handleInvocation(payload: InvocationPayload): Promise<InvocationResult> {
-  const { botId, botName, groupJid, userId, prompt, systemPrompt,
-          sessionPath, memoryPath, globalMemoryPath, sharedMemoryPath,
-          attachments, isScheduledTask, maxTurns } = payload.input;
+  const { botId, botName, groupJid, userId, prompt, sessionPath, memoryPaths,
+          attachments, isScheduledTask, maxTurns, forceNewSession } = payload;
 
   setBusy();
 
   try {
-    const sessionKey = `${botId}#${groupJid}`;
-
-    // ── 0. 检测 session 切换 (防御 microVM 复用) ──
-    // 如果 AgentCore 将此 microVM 路由给了不同的 bot/group,
-    // 必须清空本地文件系统并重新获取 scoped 凭证
-    if (currentSessionKey !== null && currentSessionKey !== sessionKey) {
-      console.warn(`Session switch detected: ${currentSessionKey} → ${sessionKey}, resetting`);
-      await cleanLocalWorkspace();   // rm -rf /workspace/group/* /workspace/global/* /home/node/.claude/*
-      scopedClients = null;
-    }
-    currentSessionKey = sessionKey;
-
     // ── 1. 获取 Scoped 凭证 (ABAC: IAM 层面限定 {userId}/{botId}/) ──
-    if (!scopedClients) {
-      scopedClients = await createScopedClients(userId, botId);
+    const scopedClients = await getScopedClients(userId, botId);
+
+    // ── 2. 两路径 S3 同步 ──
+    // forceNewSession 仅影响 SDK 的 continue 标志，不触发任何文件清理——
+    // 旧 session JSONL 留在本地/S3 都不会干扰 SDK 的 most-recent 选择。
+    const syncPaths = {
+      sessionPath,                                // → /home/node/.claude/
+      botClaude:  memoryPaths.botClaude,          // → /home/node/.claude/CLAUDE.md
+      groupPrefix: memoryPaths.groupPrefix,       // → /workspace/group/
+      learningsPrefix: memoryPaths.learnings,     // → /workspace/learnings/
+    };
+    if (syncState.initialized) {
+      // 后续请求：增量（ETag diff + 删除已从 S3 消失的本地文件，跳过 session 目录）
+      await incrementalSyncFromS3(scopedClients.s3, SESSION_BUCKET, syncPaths, logger, syncState);
+    } else {
+      // 首次请求：全量。session 目录只下载每个 projects/<hash>/ 最新 JSONL。
+      await syncFromS3(scopedClients.s3, SESSION_BUCKET, syncPaths, logger, syncState);
     }
 
-    // ── 2. Session 切换检测 → 不同 bot/group 则清理 workspace ──
-    if (currentSessionKey && currentSessionKey !== `${botId}#${groupJid}`) {
-      await cleanLocalWorkspace();
-    }
-    currentSessionKey = `${botId}#${groupJid}`;
-
-    // ── 3. S3 同步 (恢复 session + CLAUDE.md + learnings) ──
-    await syncFromS3(scopedClients.s3, SESSION_BUCKET, {
-      sessionPath,                           // → /home/node/.claude/
-      botClaude,                             // → /home/node/.claude/CLAUDE.md
-      groupPrefix,                           // → /workspace/group/ (full directory)
-      learningsPrefix,                       // → /workspace/learnings/
-    });
+    // ── 3. 记录本地快照（上传阶段用于 mtime+size 对比，跳过未变更文件） ──
+    await syncState.takeLocalSnapshot([
+      '/home/node/.claude', '/workspace/group', '/workspace/learnings',
+    ]);
+    syncState.initialized = true;
 
     // ── 4. 模板检查: 首次运行 → 复制 BOT_CLAUDE.md ──
     if (!existsSync('/home/node/.claude/CLAUDE.md')) {
       copyFileSync('/app/templates/BOT_CLAUDE.md', '/home/node/.claude/CLAUDE.md');
     }
 
-    // ── 5. 检测已有 session ──
-    const existingSessionId = detectExistingSession();
-
-    // ── 6. 构建 Append Content (详见 §16) ──
+    // ── 5. 构建 Append Content (详见 §16) ──
     const appendContent = buildAppendContent({
       botId, botName, channelType, groupJid, model, isScheduledTask,
     });
 
-    // ── 3.5 下载并引用附件 (图片/文件/语音) ──
+    // ── 6. 下载并引用附件 (图片/文件/语音) ──
     if (attachments?.length) {
       await downloadAttachments(scopedClients.s3, attachments, '/workspace/group/attachments/');
     }
 
-    // ── 4. 构建 MCP 工具配置 (传入 scoped clients 供 MCP 工具使用) ──
-    const mcpConfig = createMcpConfig({ botId, groupJid, userId });
-
-    // ── 5. 执行 Claude Agent SDK ──
-    const stream = new MessageStream();
-    stream.push(formattedPrompt);
-
+    // ── 7. 执行 Claude Agent SDK ──
     let newSessionId: string | undefined;
     let lastResult: string | null = null;
 
@@ -347,7 +337,7 @@ export async function handleInvocation(payload: InvocationPayload): Promise<Invo
       options: {
         cwd: '/workspace/group',
         additionalDirectories: extraDirs,        // /workspace/extra/* (可选)
-        resume: existingSessionId,               // 续接已有 session
+        continue: !forceNewSession,              // model/provider 变更时 false → SDK 新开 session
         systemPrompt: {
           type: 'preset', preset: 'claude_code', append: appendContent,
         },
@@ -396,13 +386,8 @@ export async function handleInvocation(payload: InvocationPayload): Promise<Invo
       }
     }
 
-    stream.end();
-
-    // ── 6. 回写变更到 S3 (使用 scoped S3 client) ──
-    await syncToS3(scopedClients.s3, {
-      sessionPath,   // /home/node/.claude/ → S3
-      memoryPath,    // /workspace/group/CLAUDE.md → S3 (如果有变更)
-    });
+    // ── 8. 增量回写到 S3（基于快照 mtime+size 比对，只上传变更文件） ──
+    await incrementalSyncToS3(scopedClients.s3, SESSION_BUCKET, syncPaths, logger, syncState);
 
     setIdle();
 

@@ -31,6 +31,7 @@ import {
   getSession,
   touchSessionTask,
   clearSessionTask,
+  setSessionResetPending,
   getTask,
   getRecentMessages,
   checkAndAcquireAgentSlot,
@@ -41,6 +42,12 @@ import {
   listBotMcpConfigs,
   getMcpServer,
 } from '../services/dynamo.js';
+import {
+  parseSlashCommand,
+  replyUnknown,
+  REPLY_RESET,
+  REPLY_HELP,
+} from './slash-commands.js';
 import { getProviderApiKey, getProxyRules } from '../services/secrets.js';
 import { getCachedBot } from '../services/cached-lookups.js';
 import type { Bot } from '@clawbot/shared';
@@ -51,13 +58,15 @@ import { assignTaskForSession, isTaskRunning } from './task-manager.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Detect model/provider change that requires session reset */
+/** Detect conditions that require session reset (force SDK continue:false) */
 export function shouldResetSession(
   session: Session | null,
   currentModel: string | undefined,
   currentProvider: ModelProvider | undefined,
 ): boolean {
   if (!session) return false;
+  // User asked to reset via /clear /reset /new slash command
+  if (session.resetPending) return true;
   if (!session.lastModel && !session.lastModelProvider) return false;
   return session.lastModel !== currentModel || session.lastModelProvider !== currentProvider;
 }
@@ -253,19 +262,25 @@ async function buildProxyRules(
 
 // ── Main dispatch entry point ───────────────────────────────────────────────
 
+/**
+ * Returns true when the message was fully handled locally (slash command) and
+ * the SQS message should be deleted immediately — no agent invocation means
+ * no reply-consumer will come to delete it later.
+ */
 export async function dispatch(
   sqsMessage: SQSMessage,
   logger: Logger,
-): Promise<void> {
+): Promise<{ deleteImmediately?: boolean }> {
   const payload: SqsPayload = JSON.parse(sqsMessage.Body!);
 
   if (payload.type === 'inbound_message') {
-    await dispatchMessage(payload, logger);
+    return await dispatchMessage(payload, logger);
   } else if (payload.type === 'scheduled_task') {
     await dispatchTask(payload, logger);
   } else {
     logger.warn({ payload }, 'Unknown SQS payload type');
   }
+  return {};
 }
 
 // ── Inbound message dispatch ────────────────────────────────────────────────
@@ -273,15 +288,48 @@ export async function dispatch(
 async function dispatchMessage(
   payload: SqsInboundPayload,
   logger: Logger,
-): Promise<void> {
+): Promise<{ deleteImmediately?: boolean }> {
   const startTime = Date.now();
 
   // 1. Load bot config
   const bot = await getCachedBot(payload.botId);
   if (!bot || bot.status !== 'active') {
     logger.info({ botId: payload.botId }, 'Bot not found or inactive, skipping dispatch');
-    return;
+    return { deleteImmediately: true };
   }
+
+  // 1b. Slash-command interception — Control Plane handles /clear /reset /new /help
+  //     and unknown /foo locally (no quota, no agent). /context /compact fall through
+  //     but skip group-context prepend and carry an sdkCommand hint for the runtime's
+  //     empty-result fallback.
+  const parsed = parseSlashCommand(payload.content);
+  if (parsed.kind === 'dispatcher') {
+    if (parsed.command === 'help') {
+      logger.info({ botId: payload.botId, groupJid: payload.groupJid, command: parsed.command }, 'Slash command handled');
+      await sendChannelReply(
+        payload.botId, payload.groupJid, payload.channelType,
+        REPLY_HELP, logger, payload.replyContext,
+      );
+      return { deleteImmediately: true };
+    }
+    // clear / reset / new — mark session for reset on the next real message
+    await setSessionResetPending(payload.botId, payload.groupJid, true);
+    logger.info({ botId: payload.botId, groupJid: payload.groupJid, command: parsed.command }, 'Slash command handled (session reset queued)');
+    await sendChannelReply(
+      payload.botId, payload.groupJid, payload.channelType,
+      REPLY_RESET, logger, payload.replyContext,
+    );
+    return { deleteImmediately: true };
+  }
+  if (parsed.kind === 'unknown') {
+    logger.info({ botId: payload.botId, groupJid: payload.groupJid, command: parsed.command }, 'Unknown slash command');
+    await sendChannelReply(
+      payload.botId, payload.groupJid, payload.channelType,
+      replyUnknown(parsed.command), logger, payload.replyContext,
+    );
+    return { deleteImmediately: true };
+  }
+  // parsed.kind === 'sdk' | 'none' fall through to the normal agent flow below.
 
   // 2. Quota checks — load user (auto-provision with defaults if needed)
   const user = await ensureUser(payload.userId);
@@ -299,7 +347,7 @@ async function dispatchMessage(
       logger,
       payload.replyContext,
     );
-    return;
+    return { deleteImmediately: true };
   }
 
   // 3. Acquire concurrency slot (atomic DynamoDB increment)
@@ -314,10 +362,14 @@ async function dispatchMessage(
     // 4. Look up group record for isGroup flag
     const group = await getGroup(payload.botId, payload.groupJid);
 
-    // 4b. Build group chat context — prepend recent messages so agent sees the conversation
-    const groupContext = await buildGroupChatContext(
-      payload.botId, payload.groupJid, !!group?.isGroup, payload.messageId, logger,
-    );
+    // 4b. Build group chat context — prepend recent messages so agent sees the conversation.
+    //     Skip for SDK slash commands (/context, /compact) where group context is noise.
+    const isSdkCommand = parsed.kind === 'sdk';
+    const groupContext = isSdkCommand
+      ? ''
+      : await buildGroupChatContext(
+          payload.botId, payload.groupJid, !!group?.isGroup, payload.messageId, logger,
+        );
     const prompt = groupContext + payload.content;
 
     // 6. Build feishu config (if channel is feishu, includes credential ARN + tool config)
@@ -368,6 +420,7 @@ async function dispatchMessage(
       ...(feishuConfig && { feishu: feishuConfig }),
       ...providerCreds,
       ...(forceNewSession && { forceNewSession: true }),
+      ...(isSdkCommand && { sdkCommand: parsed.command }),
       ...(proxyRules.length > 0 && { proxyRules }),
       ...(bot.toolWhitelist && { toolWhitelist: bot.toolWhitelist }),
       ...(payload.replyContext && { replyContext: payload.replyContext }),
@@ -389,12 +442,12 @@ async function dispatchMessage(
 
     if (result.status !== 'accepted') {
       // Ack-level failure (e.g. ARN not configured, AgentCore unreachable)
-      logger.error({ botId: payload.botId, error: result.error }, 'Agent invocation rejected');
+      logger.error({ botId: payload.botId, status: result.status, error: result.error }, 'Agent invocation rejected');
       await sendChannelReply(
         payload.botId,
         payload.groupJid,
         payload.channelType,
-        `Failed to start processing: ${result.error || 'Unknown error'}`,
+        `Failed to start processing: ${result.error || `Unexpected response (status=${result.status ?? 'none'})`}`,
         logger,
         payload.replyContext,
       );
@@ -416,6 +469,7 @@ async function dispatchMessage(
       logger.error(err, 'Failed to release agent slot'),
     );
   }
+  return {};
 }
 
 // ── Scheduled task dispatch ─────────────────────────────────────────────────
@@ -614,9 +668,37 @@ class AgentCoreInvoker implements AgentInvoker {
         }),
       );
 
-      const resultText = (await response.response?.transformToString()) || '{}';
-      const body = JSON.parse(resultText) as InvocationResult & { output?: InvocationResult };
-      return body.output ?? body;
+      const resultText = (await response.response?.transformToString()) || '';
+      const statusCode = response.statusCode;
+
+      if (!resultText) {
+        logger.error(
+          { botId: payload.botId, statusCode },
+          'AgentCore returned empty response body',
+        );
+        return { status: 'error', result: null, error: `AgentCore returned empty response (HTTP ${statusCode ?? 'unknown'})` };
+      }
+
+      const body = JSON.parse(resultText) as Record<string, unknown>;
+      const result = (body.output ?? body) as Record<string, unknown>;
+
+      if (result.status === 'accepted' || result.status === 'success') {
+        return result as unknown as InvocationResult;
+      }
+
+      // AgentCore/runtime returned a non-success response — extract error from
+      // whichever field is present (our format uses `error`, AWS uses `message`
+      // or `errorMessage`)
+      const errorMsg = result.error || result.errorMessage || result.message || '';
+      logger.error(
+        { botId: payload.botId, statusCode, rawResponse: resultText.slice(0, 500) },
+        'AgentCore invocation returned non-success response',
+      );
+      return {
+        status: 'error',
+        result: null,
+        error: (errorMsg as string) || `AgentCore returned HTTP ${statusCode ?? 'unknown'}: ${resultText.slice(0, 200)}`,
+      };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       logger.error({ err }, 'AgentCore runtime invocation failed');

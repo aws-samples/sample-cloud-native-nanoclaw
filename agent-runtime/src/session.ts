@@ -11,7 +11,7 @@
  *   /workspace/learnings/         ← Learning journal
  */
 
-import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, PutObjectCommand, ListObjectsV2Command, HeadObjectCommand } from '@aws-sdk/client-s3';
 import type { SyncState } from './sync-state.js';
 
 import { mkdir, readdir, readFile, writeFile, stat, realpath, unlink } from 'fs/promises';
@@ -43,8 +43,10 @@ export async function syncFromS3(
   logger: pino.Logger,
   state?: SyncState,
 ): Promise<void> {
-  // 1. Download session directory → /home/node/.claude/
-  await downloadDirectory(s3, bucket, paths.sessionPath, CLAUDE_DIR, logger, state);
+  // 1. Download session directory → /home/node/.claude/, keeping only the
+  //    most-recent JSONL per Claude project (older transcripts accumulate in
+  //    S3 over model switches; SDK `continue: true` only ever uses the latest)
+  await downloadSessionDirectory(s3, bucket, paths.sessionPath, CLAUDE_DIR, logger, state);
 
   // 2. Download bot CLAUDE.md → /home/node/.claude/CLAUDE.md
   await downloadFile(s3, bucket, paths.botClaude, join(CLAUDE_DIR, 'CLAUDE.md'), logger, state);
@@ -106,70 +108,9 @@ export async function downloadSkills(
 }
 
 /**
- * Delete all objects under the session S3 prefix.
- * Used when model/provider changes make existing session JSONL incompatible.
- */
-export async function clearSessionDirectory(
-  s3: S3Client,
-  bucket: string,
-  sessionPrefix: string,
-  logger: pino.Logger,
-): Promise<void> {
-  let continuationToken: string | undefined;
-  let deletedCount = 0;
-
-  do {
-    const resp = await s3.send(
-      new ListObjectsV2Command({
-        Bucket: bucket,
-        Prefix: sessionPrefix,
-        ContinuationToken: continuationToken,
-      }),
-    );
-
-    for (const obj of resp.Contents ?? []) {
-      if (!obj.Key) continue;
-      await deleteS3Object(s3, bucket, obj.Key, logger);
-      deletedCount++;
-    }
-
-    continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
-  } while (continuationToken);
-
-  if (deletedCount > 0) {
-    logger.info({ sessionPrefix, deletedCount }, 'Cleared old session files from S3');
-  }
-}
-
-/**
- * Download memory files only (bot CLAUDE.md, group workspace, learnings) — no session state.
- * Used during session reset to preserve memory while discarding incompatible session JSONL.
- */
-export async function syncMemoryOnlyFromS3(
-  s3: S3Client,
-  bucket: string,
-  paths: SyncPaths,
-  logger: pino.Logger,
-  state?: SyncState,
-): Promise<void> {
-  // Skip step 1 (session directory) — that's the incompatible data
-
-  // 2. Download bot CLAUDE.md
-  await downloadFile(s3, bucket, paths.botClaude, join(CLAUDE_DIR, 'CLAUDE.md'), logger, state);
-
-  // 3. Download group workspace
-  await downloadDirectory(s3, bucket, paths.groupPrefix, join(WORKSPACE_BASE, 'group'), logger, state);
-
-  // 4. Download learnings
-  if (paths.learningsPrefix) {
-    await downloadDirectory(s3, bucket, paths.learningsPrefix, join(WORKSPACE_BASE, 'learnings'), logger, state);
-  }
-}
-
-/**
  * Incremental download: skip session state, re-download only changed memory files.
  *
- * Used when the same session continues on the same VM/task (Path B).
+ * Used on subsequent requests within the same microVM/task lifetime.
  * - Session state download is skipped entirely (local is authoritative).
  * - Bot CLAUDE.md is re-downloaded only if ETag changed (HeadObject check).
  * - Group workspace and learnings are incrementally synced: changed/new files
@@ -318,20 +259,6 @@ async function downloadDirectoryIncremental(
   }
 }
 
-async function deleteS3Object(
-  s3: S3Client,
-  bucket: string,
-  key: string,
-  logger: pino.Logger,
-): Promise<void> {
-  try {
-    await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
-    logger.debug({ key }, 'Deleted S3 object');
-  } catch {
-    // Best effort — object may not exist
-  }
-}
-
 async function downloadFile(
   s3: S3Client,
   bucket: string,
@@ -397,6 +324,85 @@ async function downloadDirectory(
 
     continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
   } while (continuationToken);
+}
+
+/** Matches Claude Code session transcripts: `projects/<hash>/<sessionId>.jsonl`. */
+const SESSION_JSONL_RE = /^projects\/[^/]+\/[^/]+\.jsonl$/;
+
+/**
+ * Variant of downloadDirectory for the session prefix. Identical to
+ * downloadDirectory except that for each `projects/<hash>/` directory we keep
+ * only the most-recently-modified `.jsonl`. Older session transcripts
+ * accumulate in S3 whenever the user switches models (SDK `continue: false`
+ * creates a new sessionId). The SDK's `continue: true` only picks the latest
+ * one, so downloading stale JSONLs is pure I/O waste.
+ *
+ * Everything outside the JSONL pattern (settings.json, sessions-index.json,
+ * skills/, etc.) is downloaded as-is.
+ */
+async function downloadSessionDirectory(
+  s3: S3Client,
+  bucket: string,
+  prefix: string,
+  localDir: string,
+  logger: pino.Logger,
+  state?: SyncState,
+): Promise<void> {
+  // Collect all objects (ListObjectsV2 yields LastModified + ETag without extra calls)
+  const objects: Array<{ key: string; rel: string; lastModified?: Date; etag?: string }> = [];
+  let continuationToken: string | undefined;
+
+  do {
+    const resp = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      }),
+    );
+
+    for (const obj of resp.Contents ?? []) {
+      if (!obj.Key) continue;
+      const rel = obj.Key.slice(prefix.length).replace(/^\/+/, '');
+      if (!rel) continue;
+      if (isExcludedPath(rel)) continue;
+      objects.push({ key: obj.Key, rel, lastModified: obj.LastModified, etag: obj.ETag });
+    }
+
+    continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  // Partition: session JSONLs (pick latest per project) vs. everything else
+  const latestByProject = new Map<string, typeof objects[number]>();
+  const others: typeof objects = [];
+
+  for (const obj of objects) {
+    if (SESSION_JSONL_RE.test(obj.rel)) {
+      const projectDir = obj.rel.split('/', 2).join('/'); // projects/<hash>
+      const current = latestByProject.get(projectDir);
+      const isNewer = !current
+        || (obj.lastModified && current.lastModified
+            ? obj.lastModified.getTime() > current.lastModified.getTime()
+            : !!obj.lastModified);
+      if (isNewer) latestByProject.set(projectDir, obj);
+    } else {
+      others.push(obj);
+    }
+  }
+
+  const skipped = objects.length - others.length - latestByProject.size;
+  if (skipped > 0) {
+    logger.info(
+      { skipped, keptJsonl: latestByProject.size, prefix },
+      'Skipped non-current session JSONLs on first-request sync',
+    );
+  }
+
+  for (const obj of [...others, ...latestByProject.values()]) {
+    if (state && obj.etag) state.recordEtag(obj.key, obj.etag);
+    if (state) state.recordDownloadedKey(prefix, obj.key);
+    await downloadFile(s3, bucket, obj.key, join(localDir, obj.rel), logger, state);
+  }
 }
 
 async function uploadFile(
@@ -612,6 +618,6 @@ export async function incrementalSyncToS3(
 
   // Note: local file deletions are NOT propagated to S3. S3 is the source of
   // truth — if the agent deletes a file locally, it will be restored on the
-  // next full sync (Path A). Only S3-side deletions propagate to local
-  // (handled in downloadDirectoryIncremental / downloadFileIfChanged).
+  // next full sync (fresh microVM/task). Only S3-side deletions propagate to
+  // local (handled in downloadDirectoryIncremental / downloadFileIfChanged).
 }
