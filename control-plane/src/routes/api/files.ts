@@ -129,4 +129,46 @@ export const filesRoutes: FastifyPluginAsync = async (app) => {
       return { url, expiresIn: PRESIGN_EXPIRES_SECONDS };
     },
   );
+
+  // GET /bots/:botId/files/download-url — get a presigned GET URL
+  app.get<{
+    Params: { botId: string };
+    Querystring: { key: string; disposition?: 'attachment' | 'inline' };
+  }>(
+    '/download-url',
+    async (request, reply) => {
+      const { botId } = request.params;
+      const { key, disposition = 'attachment' } = request.query;
+
+      if (disposition !== 'attachment' && disposition !== 'inline') {
+        return reply.status(400).send({ error: 'invalid disposition' });
+      }
+
+      let safeKey: string;
+      try {
+        safeKey = validateRelativeKey(key);
+      } catch {
+        return reply.status(400).send({ error: 'invalid key' });
+      }
+
+      const bot = await getBot(request.userId, botId);
+      if (!bot) return reply.status(404).send({ error: 'Bot not found' });
+
+      const fullKey = `${request.userId}/${botId}/${safeKey}`;
+      const filename = safeKey.split('/').pop() ?? 'file';
+
+      const url = await getSignedUrl(
+        s3,
+        new GetObjectCommand({
+          Bucket: config.s3Bucket,
+          Key: fullKey,
+          ResponseContentDisposition:
+            `${disposition}; filename="${encodeURIComponent(filename)}"`,
+        }),
+        { expiresIn: PRESIGN_EXPIRES_SECONDS },
+      );
+
+      return { url, expiresIn: PRESIGN_EXPIRES_SECONDS };
+    },
+  );
 };
