@@ -167,7 +167,7 @@
       "download": "下载",
       "uploading": "上传中",
       "uploadTooLarge": "文件超过 100 MB 限制",
-      "retry": "重试",
+      "retry": "关闭",
       "dropHere": "拖拽文件到此处上传",
       "overwriteTitle": "文件已存在",
       "overwriteBody": "\"{{key}}\" 已存在，是否覆盖？",

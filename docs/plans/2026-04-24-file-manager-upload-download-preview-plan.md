@@ -4,7 +4,7 @@
 
 **Goal:** Add file upload (presigned PUT), download (presigned GET), and multi-format preview (markdown / html / image / text) to the web console Files tab.
 
-**Architecture:** Browser ↔ S3 direct transfer via short-lived presigned URLs issued by control-plane. Preview uses type-specific renderers in a new `FilePreview.tsx`. Text and markdown keep using the existing `/files/content` endpoint; binary and HTML use presigned GET with `disposition=inline`. No path whitelist — read/write parity.
+**Architecture:** Browser ↔ S3 direct transfer via short-lived presigned URLs issued by control-plane. Preview uses type-specific renderers in a new `FilePreview.tsx`. Text, markdown, and HTML keep using the existing `/files/content` endpoint (HTML then injected into `<iframe srcDoc sandbox="">` with a null-origin sandbox to block XSS); images use presigned GET with `disposition=inline`; downloads use presigned GET with `disposition=attachment`. No path whitelist — read/write parity.
 
 **Tech Stack:** Fastify 5 (control-plane), React 19 + Vite + TailwindCSS (web-console), AWS CDK 2 (infra), `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` (already installed), vitest (control-plane tests).
 

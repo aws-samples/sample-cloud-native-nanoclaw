@@ -82,9 +82,17 @@ Browser                 Control Plane              S3
   │<──────── file stream ───────────────────────────┤
 ```
 
-#### Preview (image / html)
+#### Preview (image)
 
-Same as download but `?disposition=inline`; URL is used as `<img src>` or `<iframe src>`.
+Same as download but `?disposition=inline`; URL is used as `<img src>`.
+
+#### Preview (html)
+
+Fetched as text via `GET /files/content`, then injected into `<iframe srcDoc={content} sandbox="">`.
+The empty `sandbox` attribute gives the iframe a null origin with no capabilities — blocking
+scripts, same-origin access, forms, and top-level navigation. Using `srcDoc` (and not a
+presigned URL) avoids the stored-XSS vector where opening such a URL in the address bar would
+execute scripts on the S3 origin.
 
 #### Preview (markdown / text)
 

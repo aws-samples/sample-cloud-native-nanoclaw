@@ -167,7 +167,7 @@
       "download": "Download",
       "uploading": "Uploading",
       "uploadTooLarge": "File exceeds 100 MB limit",
-      "retry": "Retry",
+      "retry": "Dismiss",
       "dropHere": "Drop files to upload",
       "overwriteTitle": "File already exists",
       "overwriteBody": "\"{{key}}\" already exists. Overwrite it?",
