@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, CheckCircle2, AlertCircle, Loader2, RefreshCw } from 'lucide-react';
 import { clsx } from 'clsx';
@@ -27,6 +27,16 @@ export default function UploadQueue({
   const { t } = useTranslation();
   const [hidden, setHidden] = useState(false);
 
+  // Capture latest onDismiss in a ref so the auto-hide effect doesn't re-run
+  // every time the parent re-renders with a fresh inline callback.
+  const onDismissRef = useRef(onDismiss);
+  useEffect(() => { onDismissRef.current = onDismiss; }, [onDismiss]);
+
+  // Re-show when a new batch of uploads arrives after a previous auto-hide.
+  useEffect(() => {
+    if (items.length > 0) setHidden(false);
+  }, [items.length]);
+
   // Auto-hide 3s after every item is resolved
   useEffect(() => {
     if (items.length === 0) return;
@@ -38,10 +48,10 @@ export default function UploadQueue({
     if (failed) return; // keep visible until user dismisses
     const timer = setTimeout(() => {
       setHidden(true);
-      onDismiss();
+      onDismissRef.current();
     }, 3000);
     return () => clearTimeout(timer);
-  }, [items, onDismiss]);
+  }, [items]);
 
   if (hidden || items.length === 0) return null;
 
