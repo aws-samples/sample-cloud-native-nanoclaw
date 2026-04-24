@@ -111,11 +111,10 @@ export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024; // 100 MB
 export function validateRelativeKey(key: string): string {
   if (!key || typeof key !== 'string') throw new Error('invalid key');
   if (key.startsWith('/')) throw new Error('invalid key');
-  const norm = posix.normalize(key);
-  if (norm === '..' || norm.startsWith('../') || norm.includes('/../') || norm.endsWith('/..')) {
-    throw new Error('invalid key');
-  }
-  return norm;
+  // Reject .. pre-normalize: posix.normalize("a/../b") returns "b", which
+  // would silently pass a post-normalize check.
+  if (key.split('/').includes('..')) throw new Error('invalid key');
+  return posix.normalize(key);
 }
 ```
 
@@ -538,15 +537,13 @@ export default function FilePreview({
           const c = await filesApi.content(botId, fileKey);
           if (!cancelled) setTextContent(c);
         } else if (renderer === 'html') {
-          // Source mode needs text, rendered mode needs presigned URL — load both
-          const [c, u] = await Promise.all([
-            filesApi.content(botId, fileKey),
-            filesApi.downloadUrl(botId, fileKey, 'inline'),
-          ]);
-          if (!cancelled) {
-            setTextContent(c);
-            setBinaryUrl(u.url);
-          }
+          // Both Source and Rendered modes use the text content: rendered
+          // mode puts it into an iframe via srcDoc with a null-origin sandbox,
+          // avoiding an XSS vector on the S3 origin (a presigned URL for an
+          // HTML file could otherwise execute scripts if pasted into the
+          // address bar).
+          const c = await filesApi.content(botId, fileKey);
+          if (!cancelled) setTextContent(c);
         } else if (renderer === 'image') {
           const u = await filesApi.downloadUrl(botId, fileKey, 'inline');
           if (!cancelled) setBinaryUrl(u.url);
@@ -655,17 +652,17 @@ export default function FilePreview({
           )
         )}
 
-        {renderer === 'html' && (
-          viewMode === 'rendered' && binaryUrl ? (
+        {renderer === 'html' && textContent && (
+          viewMode === 'rendered' ? (
             <iframe
-              src={binaryUrl}
-              sandbox="allow-same-origin"
+              srcDoc={textContent.content}
+              sandbox=""
               className="w-full h-full border-0"
               title={fileKey}
             />
-          ) : textContent ? (
+          ) : (
             <TextView content={textContent.content} />
-          ) : null
+          )
         )}
 
         {renderer === 'image' && binaryUrl && (
