@@ -72,6 +72,16 @@ export class FoundationStack extends cdk.Stack {
       ],
     });
 
+    // ── S3 CORS — allow browser presigned PUT/GET from any origin ──────
+    // Access is gated by SigV4 signatures in presigned URLs, not by CORS.
+    this.dataBucket.addCorsRule({
+      allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.PUT, s3.HttpMethods.HEAD],
+      allowedOrigins: ['*'],
+      allowedHeaders: ['*'],
+      exposedHeaders: ['ETag'],
+      maxAge: 3000,
+    });
+
     // ── ECR Repository (created by deploy.sh, looked up here) ──────────
     this.ecrRepo = ecr.Repository.fromRepositoryName(
       this, 'AgentRepo', 'nanoclawbot-agent',
