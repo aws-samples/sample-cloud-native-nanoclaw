@@ -160,7 +160,30 @@
       "selectFile": "选择文件以预览",
       "size": "大小：{{size}}",
       "modified": "修改时间：{{date}}",
-      "failedToLoad": "加载文件失败"
+      "failedToLoad": "加载文件失败",
+      "upload": "上传",
+      "uploadTarget": "上传至",
+      "rootFolder": "（根目录）",
+      "download": "下载",
+      "uploading": "上传中",
+      "uploadTooLarge": "文件超过 100 MB 限制",
+      "retry": "重试",
+      "dropHere": "拖拽文件到此处上传",
+      "overwriteTitle": "文件已存在",
+      "overwriteBody": "\"{{key}}\" 已存在，是否覆盖？",
+      "overwriteExisting": "现有文件",
+      "overwriteNew": "新文件",
+      "overwriteNow": "现在",
+      "overwrite": "覆盖",
+      "skip": "跳过",
+      "overwriteAll": "全部覆盖",
+      "skipAll": "全部跳过",
+      "preview": {
+        "rendered": "渲染视图",
+        "source": "源码",
+        "noPreview": "该文件类型暂不支持预览",
+        "imageFailed": "图片渲染失败"
+      }
     },
     "tools": {
       "title": "工具和技能白名单",
