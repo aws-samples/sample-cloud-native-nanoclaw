@@ -1,12 +1,18 @@
 // ClawBot Cloud — S3 File Browser API
-// List and read files under a bot's S3 prefix
+// List, read, and sign presigned URLs for files under a bot's S3 prefix
 
 import type { FastifyPluginAsync } from 'fastify';
-import { S3Client, ListObjectsV2Command, GetObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client, ListObjectsV2Command, GetObjectCommand, PutObjectCommand,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '../../config.js';
 import { getBot } from '../../services/dynamo.js';
+import { validateRelativeKey, MAX_UPLOAD_BYTES } from './files-utils.js';
 
 const s3 = new S3Client({ region: config.region });
+
+const PRESIGN_EXPIRES_SECONDS = 900;
 
 export const filesRoutes: FastifyPluginAsync = async (app) => {
   // List files/folders under a bot's S3 prefix
@@ -77,6 +83,92 @@ export const filesRoutes: FastifyPluginAsync = async (app) => {
         }
         throw err;
       }
+    },
+  );
+
+  // POST /bots/:botId/files/upload-url — get a presigned PUT URL
+  app.post<{
+    Params: { botId: string };
+    Body: { key: string; contentType?: string; size: number };
+  }>(
+    '/upload-url',
+    async (request, reply) => {
+      const { botId } = request.params;
+      const { key, contentType, size } = request.body ?? ({} as never);
+
+      if (typeof size !== 'number' || size < 0) {
+        return reply.status(400).send({ error: 'size must be a non-negative number' });
+      }
+      if (size > MAX_UPLOAD_BYTES) {
+        return reply.status(400).send({
+          error: `File too large (max ${MAX_UPLOAD_BYTES} bytes)`,
+        });
+      }
+
+      let safeKey: string;
+      try {
+        safeKey = validateRelativeKey(key);
+      } catch {
+        return reply.status(400).send({ error: 'invalid key' });
+      }
+
+      const bot = await getBot(request.userId, botId);
+      if (!bot) return reply.status(404).send({ error: 'Bot not found' });
+
+      const fullKey = `${request.userId}/${botId}/${safeKey}`;
+      const url = await getSignedUrl(
+        s3,
+        new PutObjectCommand({
+          Bucket: config.s3Bucket,
+          Key: fullKey,
+          ContentType: contentType || 'application/octet-stream',
+        }),
+        { expiresIn: PRESIGN_EXPIRES_SECONDS },
+      );
+
+      return { url, expiresIn: PRESIGN_EXPIRES_SECONDS };
+    },
+  );
+
+  // GET /bots/:botId/files/download-url — get a presigned GET URL
+  app.get<{
+    Params: { botId: string };
+    Querystring: { key: string; disposition?: 'attachment' | 'inline' };
+  }>(
+    '/download-url',
+    async (request, reply) => {
+      const { botId } = request.params;
+      const { key, disposition = 'attachment' } = request.query;
+
+      if (disposition !== 'attachment' && disposition !== 'inline') {
+        return reply.status(400).send({ error: 'invalid disposition' });
+      }
+
+      let safeKey: string;
+      try {
+        safeKey = validateRelativeKey(key);
+      } catch {
+        return reply.status(400).send({ error: 'invalid key' });
+      }
+
+      const bot = await getBot(request.userId, botId);
+      if (!bot) return reply.status(404).send({ error: 'Bot not found' });
+
+      const fullKey = `${request.userId}/${botId}/${safeKey}`;
+      const filename = safeKey.split('/').pop() ?? 'file';
+
+      const url = await getSignedUrl(
+        s3,
+        new GetObjectCommand({
+          Bucket: config.s3Bucket,
+          Key: fullKey,
+          ResponseContentDisposition:
+            `${disposition}; filename="${encodeURIComponent(filename)}"`,
+        }),
+        { expiresIn: PRESIGN_EXPIRES_SECONDS },
+      );
+
+      return { url, expiresIn: PRESIGN_EXPIRES_SECONDS };
     },
   );
 };

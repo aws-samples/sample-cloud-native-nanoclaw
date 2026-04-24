@@ -160,7 +160,30 @@
       "selectFile": "Select a file to preview",
       "size": "Size: {{size}}",
       "modified": "Modified: {{date}}",
-      "failedToLoad": "Failed to load files"
+      "failedToLoad": "Failed to load files",
+      "upload": "Upload",
+      "uploadTarget": "Upload target",
+      "rootFolder": "(root)",
+      "download": "Download",
+      "uploading": "Uploading",
+      "uploadTooLarge": "File exceeds 100 MB limit",
+      "retry": "Dismiss",
+      "dropHere": "Drop files to upload",
+      "overwriteTitle": "File already exists",
+      "overwriteBody": "\"{{key}}\" already exists. Overwrite it?",
+      "overwriteExisting": "Existing",
+      "overwriteNew": "New",
+      "overwriteNow": "Now",
+      "overwrite": "Overwrite",
+      "skip": "Skip",
+      "overwriteAll": "Overwrite all",
+      "skipAll": "Skip all",
+      "preview": {
+        "rendered": "Rendered",
+        "source": "Source",
+        "noPreview": "No preview available for this file type",
+        "imageFailed": "Failed to render image"
+      }
     },
     "tools": {
       "title": "Tool & Skill Whitelist",

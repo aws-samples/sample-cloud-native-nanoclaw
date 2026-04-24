@@ -404,11 +404,33 @@ export interface MemoryResponse {
 }
 
 // File Browser API
+export interface PresignedUrlResponse {
+  url: string;
+  expiresIn: number;
+}
+
 export const files = {
   list: (botId: string, prefix?: string) =>
     request<{ entries: FileEntry[] }>(`/bots/${botId}/files${prefix ? `?prefix=${encodeURIComponent(prefix)}` : ''}`),
   content: (botId: string, key: string) =>
     request<FileContent>(`/bots/${botId}/files/content?key=${encodeURIComponent(key)}`),
+  uploadUrl: (
+    botId: string,
+    body: { key: string; contentType: string; size: number },
+  ) =>
+    request<PresignedUrlResponse>(
+      `/bots/${botId}/files/upload-url`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+  downloadUrl: (
+    botId: string,
+    key: string,
+    disposition: 'attachment' | 'inline' = 'attachment',
+  ) =>
+    request<PresignedUrlResponse>(
+      `/bots/${botId}/files/download-url?key=${encodeURIComponent(key)}` +
+      `&disposition=${disposition}`,
+    ),
 };
 
 // Proxy Rules API (credential injection)
