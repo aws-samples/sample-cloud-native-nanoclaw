@@ -184,6 +184,15 @@ export default function FileBrowser({ botId }: { botId: string }) {
     if (accepted.length > 0) setPending((p) => [...p, ...accepted]);
   };
 
+  // Reset "apply to all" flags once the current batch drains so they don't
+  // silently carry over into future uploads.
+  useEffect(() => {
+    if (pending.length === 0) {
+      if (overwriteAll) setOverwriteAll(false);
+      if (skipAll) setSkipAll(false);
+    }
+  }, [pending.length, overwriteAll, skipAll]);
+
   // Process pending queue — dequeues one at a time, but XHRs run concurrently
   useEffect(() => {
     if (pending.length === 0 || overwrite) return;
