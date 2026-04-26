@@ -21,6 +21,7 @@ import {
   getSession,
   clearPendingHandle,
 } from '../services/dynamo.js';
+import { stopRenewal } from './visibility-extender.js';
 
 let running = false;
 
@@ -156,6 +157,9 @@ async function replyLoop(logger: Logger): Promise<void> {
                 const session = await getSession(payload.botId, payload.groupJid);
                 const pendingHandle = session?.pendingReceiptHandle;
                 if (pendingHandle) {
+                  // Stop visibility renewal *before* deleting so no further
+                  // ChangeMessageVisibility calls race against DeleteMessage.
+                  stopRenewal(pendingHandle);
                   try {
                     await sqs.send(new DeleteMessageCommand({
                       QueueUrl: config.queues.messages,
