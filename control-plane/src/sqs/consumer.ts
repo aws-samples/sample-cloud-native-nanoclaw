@@ -9,6 +9,7 @@ import {
 } from '@aws-sdk/client-sqs';
 import { config } from '../config.js';
 import { dispatch } from './dispatcher.js';
+import { startRenewal } from './visibility-extender.js';
 import { touchSessionTask } from '../services/dynamo.js';
 import type { SqsPayload } from '@clawbot/shared';
 import type { Logger } from 'pino';
@@ -207,6 +208,10 @@ async function consumeLoop(logger: Logger): Promise<void> {
               await touchSessionTask(botId, groupJid, handle).catch((err) =>
                 logger.warn({ err, key: groupKey }, 'Failed to persist pending receipt handle'),
               );
+              // Periodically extend visibility while the agent is running so the
+              // inbound message is NOT re-delivered during long tasks (>10 min).
+              // reply-consumer.ts calls stopRenewal() right before it deletes.
+              startRenewal(handle, config.queues.messages, logger);
               logger.debug({ key: groupKey, messageId: msg.MessageId }, 'Deferred SQS delete until agent reply');
             } else {
               sqs.send(new DeleteMessageCommand({
