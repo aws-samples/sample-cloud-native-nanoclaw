@@ -355,6 +355,42 @@ fi
 
 fi  # end DEPLOY_MODE=agentcore (Steps 10-11)
 
+# ── Step 11b: (ECS mode only) Stop warm agent tasks to force image refresh ────
+# Warm agent-runtime tasks no longer exit on idle, so they would otherwise run
+# stale images indefinitely. Stop them here; the control-plane warm-pool
+# replenisher will backfill from the newly-pushed image within ~3 min.
+if [ "$DEPLOY_MODE" = "ecs" ]; then
+  log "Step 11b: Stopping warm agent tasks to pick up new agent-runtime image"
+  SESSIONS_TABLE="${PREFIX}-${STAGE}-sessions"
+  AGENT_CLUSTER=$(get_stack_output "${STACK_PREFIX}-Agent" "AgentClusterName")
+  if [ -z "$AGENT_CLUSTER" ] || [ "$AGENT_CLUSTER" = "None" ]; then
+    log "  WARN: Could not resolve AgentClusterName, skipping"
+  else
+    WARM_ARNS=$(aws dynamodb query \
+      --table-name "$SESSIONS_TABLE" \
+      --key-condition-expression "pk = :pk" \
+      --expression-attribute-values '{":pk":{"S":"warm"}}' \
+      --projection-expression "taskArn" \
+      --region "$REGION" \
+      --query 'Items[].taskArn.S' \
+      --output text 2>/dev/null || echo "")
+    if [ -n "$WARM_ARNS" ] && [ "$WARM_ARNS" != "None" ]; then
+      COUNT=0
+      for arn in $WARM_ARNS; do
+        aws ecs stop-task \
+          --cluster "$AGENT_CLUSTER" \
+          --task "$arn" \
+          --reason "deploy image refresh" \
+          --region "$REGION" >/dev/null 2>&1 || true
+        COUNT=$((COUNT + 1))
+      done
+      log "  Stopped ${COUNT} warm agent task(s) — replenisher will backfill"
+    else
+      log "  No warm tasks registered in DynamoDB"
+    fi
+  fi
+fi
+
 # ── Step 12: Build web-console with Cognito config ───────────────────────────
 
 log "Step 12: Build web-console"
