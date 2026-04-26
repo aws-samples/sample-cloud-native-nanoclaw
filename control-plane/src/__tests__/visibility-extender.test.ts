@@ -25,6 +25,10 @@ describe('visibility-extender', () => {
     vi.useFakeTimers();
     mockSend.mockReset();
     mockSend.mockResolvedValue({});
+    (logger.info as ReturnType<typeof vi.fn>).mockReset();
+    (logger.warn as ReturnType<typeof vi.fn>).mockReset();
+    (logger.error as ReturnType<typeof vi.fn>).mockReset();
+    (logger.debug as ReturnType<typeof vi.fn>).mockReset();
     const mod = await import('../sqs/visibility-extender.js');
     startRenewal = mod.startRenewal;
     stopRenewal = mod.stopRenewal;
@@ -108,6 +112,9 @@ describe('visibility-extender', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(mockSend).toHaveBeenCalledTimes(2);
-    expect(logger.warn).toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ receiptHandle: expect.any(String) }),
+      'SQS visibility renewal failed',
+    );
   });
 });

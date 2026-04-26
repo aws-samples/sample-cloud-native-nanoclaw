@@ -18,7 +18,7 @@ import type { Logger } from 'pino';
 
 const sqs = new SQSClient({ region: config.region });
 
-interface RenewalOptions {
+export interface RenewalOptions {
   /** Interval between renewals in ms. Default 300_000 (5 min). */
   intervalMs?: number;
   /** New visibility timeout in seconds each renewal. Default 600 (10 min). */
