@@ -219,6 +219,41 @@ describe('invokeAgent', () => {
     expect(result.error).toContain('not configured');
     expect(mockSend).not.toHaveBeenCalled();
   });
+
+  it('returns busy_retry when AWS SDK rejects with a 503 RuntimeClientError', async () => {
+    const err = Object.assign(
+      new Error('Received error (503) from runtime. Please check your CloudWatch logs for more information.'),
+      { name: 'RuntimeClientError' },
+    );
+    mockSend.mockRejectedValue(err);
+
+    const result = await invokeAgent(basePayload, mockLogger);
+
+    expect(result.status).toBe('busy_retry');
+    expect(result.result).toBeNull();
+    expect(result.error).toContain('503');
+  });
+
+  it('returns busy_retry when error message carries the (503) signature even without name', async () => {
+    mockSend.mockRejectedValue(new Error('Received error (503) from runtime.'));
+
+    const result = await invokeAgent(basePayload, mockLogger);
+
+    expect(result.status).toBe('busy_retry');
+  });
+
+  it('still returns error (not busy_retry) for non-503 RuntimeClientError', async () => {
+    const err = Object.assign(
+      new Error('Received error (500) from runtime.'),
+      { name: 'RuntimeClientError' },
+    );
+    mockSend.mockRejectedValue(err);
+
+    const result = await invokeAgent(basePayload, mockLogger);
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('500');
+  });
 });
 
 // ── Async dispatch tests (fire-and-forget) ──────────────────────────────────
