@@ -440,7 +440,18 @@ async function dispatchMessage(
     // 8. Invoke AgentCore (async — returns immediately with ack)
     const result = await invokeAgent(invocationPayload, logger);
 
-    if (result.status !== 'accepted') {
+    if (result.status === 'busy_retry') {
+      // AgentCore microVM is busy on a previous invocation for this session
+      // (almost always a SQS re-delivery while a long-running task is still
+      // going). Do NOT notify the user — that original task will reply in its
+      // own time. Let the SQS message's (now-renewed) visibility timeout
+      // govern retry / delivery, and let touchSessionTask update the pending
+      // receipt handle so reply-consumer can delete the right message later.
+      logger.warn(
+        { botId: payload.botId, groupJid: payload.groupJid, error: result.error },
+        'Agent busy on prior invocation — suppressing user-visible error (re-delivery)',
+      );
+    } else if (result.status !== 'accepted') {
       // Ack-level failure (e.g. ARN not configured, AgentCore unreachable)
       logger.error({ botId: payload.botId, status: result.status, error: result.error }, 'Agent invocation rejected');
       await sendChannelReply(
@@ -545,7 +556,12 @@ async function dispatchTask(
 
   const result = await invokeAgent(invocationPayload, logger);
 
-  if (result.status !== 'accepted') {
+  if (result.status === 'busy_retry') {
+    logger.warn(
+      { botId: payload.botId, taskId: payload.taskId, error: result.error },
+      'Scheduled task found agent busy — will retry via SQS visibility timeout',
+    );
+  } else if (result.status !== 'accepted') {
     logger.error(
       { botId: payload.botId, taskId: payload.taskId, error: result.error },
       'Scheduled task invocation rejected',
