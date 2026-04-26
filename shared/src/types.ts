@@ -343,7 +343,8 @@ export interface MemoryPaths {
 
 // Evolved from NanoClaw's ContainerOutput (stdout markers)
 export interface InvocationResult {
-  status: 'success' | 'error' | 'accepted';
+  /** `busy_retry` = transient 503 from a re-delivered inbound message; caller must not notify the user. */
+  status: 'success' | 'error' | 'accepted' | 'busy_retry';
   result: string | null;
   newSessionId?: string;
   tokensUsed?: number;

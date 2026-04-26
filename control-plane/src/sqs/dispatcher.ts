@@ -440,7 +440,18 @@ async function dispatchMessage(
     // 8. Invoke AgentCore (async — returns immediately with ack)
     const result = await invokeAgent(invocationPayload, logger);
 
-    if (result.status !== 'accepted') {
+    if (result.status === 'busy_retry') {
+      // AgentCore microVM is busy on a previous invocation for this session
+      // (almost always a SQS re-delivery while a long-running task is still
+      // going). Do NOT notify the user — that original task will reply in its
+      // own time. Let the SQS message's (now-renewed) visibility timeout
+      // govern retry / delivery, and let touchSessionTask update the pending
+      // receipt handle so reply-consumer can delete the right message later.
+      logger.warn(
+        { botId: payload.botId, groupJid: payload.groupJid, error: result.error },
+        'Agent busy on prior invocation — suppressing user-visible error (re-delivery)',
+      );
+    } else if (result.status !== 'accepted') {
       // Ack-level failure (e.g. ARN not configured, AgentCore unreachable)
       logger.error({ botId: payload.botId, status: result.status, error: result.error }, 'Agent invocation rejected');
       await sendChannelReply(
@@ -545,7 +556,12 @@ async function dispatchTask(
 
   const result = await invokeAgent(invocationPayload, logger);
 
-  if (result.status !== 'accepted') {
+  if (result.status === 'busy_retry') {
+    logger.warn(
+      { botId: payload.botId, taskId: payload.taskId, error: result.error },
+      'Scheduled task found agent busy — will retry via SQS visibility timeout',
+    );
+  } else if (result.status !== 'accepted') {
     logger.error(
       { botId: payload.botId, taskId: payload.taskId, error: result.error },
       'Scheduled task invocation rejected',
@@ -701,6 +717,19 @@ class AgentCoreInvoker implements AgentInvoker {
       };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+      // Detect the "runtime returned 503" path specifically. The AWS SDK wraps it
+      // as a RuntimeClientError whose message contains "(503) from runtime".
+      // In that case the microVM is busy on a previous invocation — this is a
+      // re-delivery (or duplicate) we should not surface to the end user.
+      const is503 = /\(503\) from runtime/i.test(message);
+      if (is503) {
+        logger.warn({ err }, 'AgentCore runtime busy (503), returning busy_retry');
+        return {
+          status: 'busy_retry',
+          result: null,
+          error: `AgentCore invocation failed: ${message}`,
+        };
+      }
       logger.error({ err }, 'AgentCore runtime invocation failed');
       return { status: 'error', result: null, error: `AgentCore invocation failed: ${message}` };
     }
