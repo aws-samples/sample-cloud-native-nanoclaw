@@ -701,6 +701,19 @@ class AgentCoreInvoker implements AgentInvoker {
       };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+      // Detect the "runtime returned 503" path specifically. The AWS SDK wraps it
+      // as a RuntimeClientError whose message contains "(503) from runtime".
+      // In that case the microVM is busy on a previous invocation — this is a
+      // re-delivery (or duplicate) we should not surface to the end user.
+      const is503 = /\(503\) from runtime/i.test(message);
+      if (is503) {
+        logger.warn({ err }, 'AgentCore runtime busy (503), returning busy_retry');
+        return {
+          status: 'busy_retry',
+          result: null,
+          error: `AgentCore invocation failed: ${message}`,
+        };
+      }
       logger.error({ err }, 'AgentCore runtime invocation failed');
       return { status: 'error', result: null, error: `AgentCore invocation failed: ${message}` };
     }
