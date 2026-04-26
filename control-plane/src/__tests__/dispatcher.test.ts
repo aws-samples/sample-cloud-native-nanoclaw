@@ -298,6 +298,7 @@ describe('dispatch async invoke handling', () => {
     mockSetSessionResetPending.mockResolvedValue(undefined);
     (mockLogger.info as ReturnType<typeof vi.fn>).mockReset();
     (mockLogger.error as ReturnType<typeof vi.fn>).mockReset();
+    (mockLogger.warn as ReturnType<typeof vi.fn>).mockReset();
 
     // Default mock behaviors
     mockGetCachedBot.mockResolvedValue({ name: 'TestBot', status: 'active', systemPrompt: 'You are a bot', model: 'claude-sonnet' });
@@ -420,6 +421,54 @@ describe('dispatch async invoke handling', () => {
     await dispatch(makeSqsMessage(payload), mockLogger);
 
     expect((mockLogger.error as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+  });
+
+  it('does NOT send channel reply when AgentCore returns 503 (busy_retry)', async () => {
+    mockSend.mockRejectedValue(
+      new Error('Received error (503) from runtime. Please check your CloudWatch logs for more information.'),
+    );
+
+    const payload: SqsInboundPayload = {
+      type: 'inbound_message',
+      botId: 'bot-1',
+      groupJid: 'tg:123',
+      userId: 'user-1',
+      messageId: 'msg-busy',
+      content: 'Hello',
+      channelType: 'telegram',
+      timestamp: new Date().toISOString(),
+    };
+
+    await dispatch(makeSqsMessage(payload), mockLogger);
+
+    expect(mockSendReply).not.toHaveBeenCalled();
+    expect((mockLogger.warn as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-1', groupJid: 'tg:123' }),
+      expect.stringContaining('suppressing user-visible error'),
+    );
+  });
+
+  it('scheduled task logs warn (not error) when agent is busy (busy_retry)', async () => {
+    mockSend.mockRejectedValue(
+      new Error('Received error (503) from runtime. Please check your CloudWatch logs for more information.'),
+    );
+
+    const payload: SqsTaskPayload = {
+      type: 'scheduled_task',
+      botId: 'bot-1',
+      groupJid: 'tg:123',
+      userId: 'user-1',
+      taskId: 'task-busy',
+      timestamp: new Date().toISOString(),
+    };
+
+    await dispatch(makeSqsMessage(payload), mockLogger);
+
+    expect((mockLogger.warn as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-1', taskId: 'task-busy' }),
+      expect.stringContaining('agent busy'),
+    );
+    expect((mockLogger.error as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 
   // ── Slash command interception ─────────────────────────────────────────────
