@@ -30,6 +30,21 @@ let busy = false;
 export function setBusy() { busy = true; }
 export function setIdle() { busy = false; }
 
+// Idle monitor is deferred until the first /invocations — that is the moment
+// this container stops being a "warm pool" member and becomes a dedicated,
+// session-bound task. Tracked with a flag so we only start the monitor once.
+let idleMonitorStarted = false;
+function ensureIdleMonitorStarted() {
+  if (idleMonitorStarted) return;
+  if (process.env.AGENT_MODE !== 'ecs') return;
+  const idleMinutes = Number(process.env.IDLE_TIMEOUT_MINUTES) || 60;
+  startIdleMonitor(logger, idleMinutes, async () => {
+    logger.info('Idle timeout — performing graceful shutdown');
+  });
+  idleMonitorStarted = true;
+  logger.info({ idleMinutes }, 'Idle monitor activated (task transitioned warm -> dedicated)');
+}
+
 // AgentCore health check — must never block, respond in < 100ms
 app.get('/ping', async () => {
   return { status: busy ? 'HealthyBusy' : 'Healthy' };
@@ -38,6 +53,7 @@ app.get('/ping', async () => {
 // Agent execution endpoint — async fire-and-forget
 app.post<{ Body: InvocationPayload }>('/invocations', async (request, reply) => {
   const payload = request.body;
+  ensureIdleMonitorStarted();
   // Reject concurrent requests — single-concurrency per task in both modes.
   // SQS FIFO + deferred deletion prevents this in normal operation, but
   // 503 rejection is a safety net against edge cases (CP restart, receipt expiry).
@@ -101,16 +117,13 @@ async function runInBackground(payload: InvocationPayload): Promise<void> {
 await app.listen({ port, host: '0.0.0.0' });
 logger.info(`Agent runtime listening on port ${port}`);
 
-// ECS dedicated task mode — register after server is ready
+// ECS dedicated task mode — register as warm. Idle monitor is deferred
+// to the first /invocations (see above) so warm tasks do NOT exit and
+// force the control-plane warm-pool replenisher into a ~$$$/day cold-start loop.
 if (process.env.AGENT_MODE === 'ecs') {
   try {
     const meta = await registerTask(logger);
     logger.info({ taskArn: meta.taskArn }, 'ECS task registered');
-
-    const idleMinutes = Number(process.env.IDLE_TIMEOUT_MINUTES) || 60;
-    startIdleMonitor(logger, idleMinutes, async () => {
-      logger.info('Idle timeout — performing graceful shutdown');
-    });
   } catch (err) {
     logger.error(err, 'Failed to register ECS task');
   }

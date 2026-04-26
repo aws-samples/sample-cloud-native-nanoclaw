@@ -21,8 +21,11 @@ export function startIdleMonitor(
   logger.info({ idleTimeoutMinutes }, 'Idle monitor started');
 }
 
-/** Reset the idle timer (call when invocation completes or on startup). */
+/** Reset the idle timer (call when invocation completes or on startup).
+ *  No-op before startIdleMonitor has been called — this lets warm tasks
+ *  defer monitor activation until they take their first invocation. */
 export function resetIdleTimer(): void {
+  if (onTimeout === null) return;
   if (idleTimer) clearTimeout(idleTimer);
   idleTimer = setTimeout(async () => {
     monitorLogger?.info('Idle timeout reached, shutting down');
