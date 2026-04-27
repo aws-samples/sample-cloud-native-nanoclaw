@@ -45,9 +45,15 @@ function ensureIdleMonitorStarted() {
   logger.info({ idleMinutes }, 'Idle monitor activated (task transitioned warm -> dedicated)');
 }
 
-// AgentCore health check — must never block, respond in < 100ms
+// AgentCore health check — must never block, respond in < 100ms.
+// Response MUST include `time_of_last_update` per AgentCore HTTP protocol contract;
+// without it AgentCore cannot tell whether the `HealthyBusy` status is fresh and
+// falls back to `idleRuntimeSessionTimeout`, killing long-running agents at 15 min.
 app.get('/ping', async () => {
-  return { status: busy ? 'HealthyBusy' : 'Healthy' };
+  return {
+    status: busy ? 'HealthyBusy' : 'Healthy',
+    time_of_last_update: Math.floor(Date.now() / 1000),
+  };
 });
 
 // Agent execution endpoint — async fire-and-forget
