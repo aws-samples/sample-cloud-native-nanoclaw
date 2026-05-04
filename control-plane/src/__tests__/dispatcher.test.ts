@@ -268,6 +268,7 @@ describe('dispatch async invoke handling', () => {
   const mockGetTask = vi.fn();
   const mockGetCachedBot = vi.fn();
   const mockSetSessionResetPending = vi.fn();
+  const mockDisableOrphanedSchedule = vi.fn();
 
   let dispatch: (sqsMessage: SQSMessage, logger: Logger) => Promise<{ deleteImmediately?: boolean }>;
 
@@ -296,6 +297,8 @@ describe('dispatch async invoke handling', () => {
     mockGetCachedBot.mockReset();
     mockSetSessionResetPending.mockReset();
     mockSetSessionResetPending.mockResolvedValue(undefined);
+    mockDisableOrphanedSchedule.mockReset();
+    mockDisableOrphanedSchedule.mockResolvedValue(undefined);
     (mockLogger.info as ReturnType<typeof vi.fn>).mockReset();
     (mockLogger.error as ReturnType<typeof vi.fn>).mockReset();
     (mockLogger.warn as ReturnType<typeof vi.fn>).mockReset();
@@ -342,6 +345,12 @@ describe('dispatch async invoke handling', () => {
       getRegistry: () => ({
         get: () => ({ sendReply: mockSendReply }),
       }),
+    }));
+
+    vi.doMock('../scheduler/schedule-sync.js', () => ({
+      disableOrphanedSchedule: mockDisableOrphanedSchedule,
+      schedulerConfigured: () => true,
+      scheduleNameFor: (b: string, t: string) => `nanoclawbot-${b}-${t}`,
     }));
 
     const mod = await import('../sqs/dispatcher.js');
@@ -446,6 +455,100 @@ describe('dispatch async invoke handling', () => {
       expect.objectContaining({ botId: 'bot-1', groupJid: 'tg:123' }),
       expect.stringContaining('suppressing user-visible error'),
     );
+  });
+
+  // ── Phantom scheduled_task fires (regression guard) ─────────────────────────
+  // Before the fix, dispatchTask returned void and the consumer stored a
+  // pendingReceiptHandle for every scheduled_task whose bot/task was paused or
+  // missing. That blocked the FIFO MessageGroupId and stalled user messages.
+  // The dispatcher must now signal deleteImmediately so the consumer drops the
+  // SQS message and the upstream EventBridge schedule is self-healed.
+
+  it('paused scheduled_task returns deleteImmediately and disables upstream schedule', async () => {
+    mockGetTask.mockResolvedValueOnce({ status: 'paused', prompt: 'good morning' });
+
+    const payload: SqsTaskPayload = {
+      type: 'scheduled_task',
+      botId: 'bot-1',
+      groupJid: 'tg:123',
+      userId: 'user-1',
+      taskId: 'task-paused',
+      timestamp: new Date().toISOString(),
+    };
+
+    const result = await dispatch(makeSqsMessage(payload), mockLogger);
+
+    expect(result.deleteImmediately).toBe(true);
+    expect(mockSend).not.toHaveBeenCalled();                    // agent not invoked
+    expect(mockDisableOrphanedSchedule).toHaveBeenCalledWith(
+      'bot-1', 'task-paused', mockLogger,
+    );
+    expect((mockLogger.warn as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(
+      expect.objectContaining({ botId: 'bot-1', taskId: 'task-paused', taskStatus: 'paused' }),
+      expect.stringContaining('task is not active'),
+    );
+  });
+
+  it('missing task (deleted) returns deleteImmediately and disables upstream schedule', async () => {
+    mockGetTask.mockResolvedValueOnce(null);
+
+    const payload: SqsTaskPayload = {
+      type: 'scheduled_task',
+      botId: 'bot-1',
+      groupJid: 'tg:123',
+      userId: 'user-1',
+      taskId: 'task-gone',
+      timestamp: new Date().toISOString(),
+    };
+
+    const result = await dispatch(makeSqsMessage(payload), mockLogger);
+
+    expect(result.deleteImmediately).toBe(true);
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockDisableOrphanedSchedule).toHaveBeenCalledWith(
+      'bot-1', 'task-gone', mockLogger,
+    );
+  });
+
+  it('inactive bot returns deleteImmediately and disables upstream schedule', async () => {
+    mockGetCachedBot.mockResolvedValueOnce({ name: 'TestBot', status: 'deleted', systemPrompt: '', model: 'claude-sonnet' });
+
+    const payload: SqsTaskPayload = {
+      type: 'scheduled_task',
+      botId: 'bot-1',
+      groupJid: 'tg:123',
+      userId: 'user-1',
+      taskId: 'task-orphan',
+      timestamp: new Date().toISOString(),
+    };
+
+    const result = await dispatch(makeSqsMessage(payload), mockLogger);
+
+    expect(result.deleteImmediately).toBe(true);
+    expect(mockGetTask).not.toHaveBeenCalled();                 // short-circuits before task lookup
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockDisableOrphanedSchedule).toHaveBeenCalledWith(
+      'bot-1', 'task-orphan', mockLogger,
+    );
+  });
+
+  it('active scheduled_task does NOT return deleteImmediately (happy path kept intact)', async () => {
+    mockAgentResult({ status: 'accepted', result: null });
+
+    const payload: SqsTaskPayload = {
+      type: 'scheduled_task',
+      botId: 'bot-1',
+      groupJid: 'tg:123',
+      userId: 'user-1',
+      taskId: 'task-active',
+      timestamp: new Date().toISOString(),
+    };
+
+    const result = await dispatch(makeSqsMessage(payload), mockLogger);
+
+    expect(result.deleteImmediately).toBeUndefined();           // consumer defers delete to reply-consumer
+    expect(mockSend).toHaveBeenCalledOnce();
+    expect(mockDisableOrphanedSchedule).not.toHaveBeenCalled();
   });
 
   it('scheduled task logs warn (not error) when agent is busy (busy_retry)', async () => {
@@ -579,6 +682,11 @@ describe('shouldResetSession', () => {
     vi.doMock('../services/secrets.js', () => ({}));
     vi.doMock('../services/cached-lookups.js', () => ({}));
     vi.doMock('../adapters/registry.js', () => ({}));
+    vi.doMock('../scheduler/schedule-sync.js', () => ({
+      disableOrphanedSchedule: vi.fn().mockResolvedValue(undefined),
+      schedulerConfigured: () => false,
+      scheduleNameFor: (b: string, t: string) => `nanoclawbot-${b}-${t}`,
+    }));
 
     const mod = await import('../sqs/dispatcher.js');
     shouldResetSession = mod.shouldResetSession;

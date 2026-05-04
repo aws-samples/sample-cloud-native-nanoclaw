@@ -55,6 +55,7 @@ import { getRegistry } from '../adapters/registry.js';
 import type { ReplyContext, ReplyOptions } from '@clawbot/shared/channel-adapter';
 import type { Logger } from 'pino';
 import { assignTaskForSession, isTaskRunning } from './task-manager.js';
+import { disableOrphanedSchedule } from '../scheduler/schedule-sync.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -276,7 +277,7 @@ export async function dispatch(
   if (payload.type === 'inbound_message') {
     return await dispatchMessage(payload, logger);
   } else if (payload.type === 'scheduled_task') {
-    await dispatchTask(payload, logger);
+    return await dispatchTask(payload, logger);
   } else {
     logger.warn({ payload }, 'Unknown SQS payload type');
   }
@@ -488,12 +489,30 @@ async function dispatchMessage(
 async function dispatchTask(
   payload: SqsTaskPayload,
   logger: Logger,
-): Promise<void> {
+): Promise<{ deleteImmediately?: boolean }> {
   const bot = await getCachedBot(payload.botId);
-  if (!bot || bot.status !== 'active') return;
+  if (!bot || bot.status !== 'active') {
+    // Phantom fire: the EventBridge schedule is still enabled but the bot is
+    // gone or deactivated. Return deleteImmediately so the consumer drops the
+    // SQS message instead of storing a pendingReceiptHandle (which would block
+    // every subsequent message in the same FIFO MessageGroupId).
+    logger.warn(
+      { botId: payload.botId, taskId: payload.taskId, botStatus: bot?.status ?? 'missing' },
+      'Scheduled task skipped: bot is not active — deleting message and disabling upstream schedule',
+    );
+    await disableOrphanedSchedule(payload.botId, payload.taskId, logger);
+    return { deleteImmediately: true };
+  }
 
   const task = await getTask(payload.botId, payload.taskId);
-  if (!task || task.status !== 'active') return;
+  if (!task || task.status !== 'active') {
+    logger.warn(
+      { botId: payload.botId, taskId: payload.taskId, taskStatus: task?.status ?? 'missing' },
+      'Scheduled task skipped: task is not active — deleting message and disabling upstream schedule',
+    );
+    await disableOrphanedSchedule(payload.botId, payload.taskId, logger);
+    return { deleteImmediately: true };
+  }
 
   // Look up group record to resolve channelType
   const group = await getGroup(payload.botId, payload.groupJid);
@@ -572,6 +591,8 @@ async function dispatchTask(
     { botId: payload.botId, taskId: payload.taskId, status: result.status },
     'Scheduled task dispatch complete',
   );
+
+  return {};
 }
 
 // ── Skill Resolution ─────────────────────────────────────────────────────────
