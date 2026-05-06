@@ -107,7 +107,7 @@ SQS FIFO ordering guarantee (ECS mode): Inbound SQS message deletion is deferred
 |---------|---------|---------|
 | Fastify | 5.2 | control-plane, agent-runtime |
 | AWS SDK v3 | 3.700+ | control-plane, agent-runtime |
-| Claude Agent SDK | 0.2.76 | agent-runtime |
+| Claude Agent SDK | 0.2.128 | agent-runtime |
 | MCP SDK | 1.0.0 | agent-runtime |
 | discord.js | 14.25 | control-plane (Discord Gateway) |
 | @larksuiteoapi/node-sdk | 1.59 | control-plane (Feishu Gateway), agent-runtime (Feishu Skills) |

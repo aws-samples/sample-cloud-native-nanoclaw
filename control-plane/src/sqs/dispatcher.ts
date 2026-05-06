@@ -421,6 +421,9 @@ async function dispatchMessage(
       ...(feishuConfig && { feishu: feishuConfig }),
       ...providerCreds,
       ...(forceNewSession && { forceNewSession: true }),
+      ...(!forceNewSession && existingSession?.agentcoreSessionId && {
+        resumeSessionId: existingSession.agentcoreSessionId,
+      }),
       ...(isSdkCommand && { sdkCommand: parsed.command }),
       ...(proxyRules.length > 0 && { proxyRules }),
       ...(bot.toolWhitelist && { toolWhitelist: bot.toolWhitelist }),
@@ -561,6 +564,9 @@ async function dispatchTask(
     ...(feishuConfig && { feishu: feishuConfig }),
     ...providerCreds,
     ...(forceNewSession && { forceNewSession: true }),
+    ...(!forceNewSession && existingSession?.agentcoreSessionId && {
+      resumeSessionId: existingSession.agentcoreSessionId,
+    }),
     ...(proxyRulesTask.length > 0 && {
       proxyRules: proxyRulesTask,
     }),

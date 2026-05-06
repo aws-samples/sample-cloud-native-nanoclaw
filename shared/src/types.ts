@@ -292,6 +292,13 @@ export interface InvocationPayload {
   feishu?: FeishuInvocationConfig;
   /** When true, agent runtime should NOT resume existing session (model/provider changed) */
   forceNewSession?: boolean;
+  /**
+   * Claude Agent SDK session ID to resume. When set (and `forceNewSession` is
+   * not true), agent-runtime passes `resume: <sessionId>` to the SDK instead
+   * of `continue: true` — a more robust lookup that doesn't depend on the
+   * cwd→project-hash mapping.
+   */
+  resumeSessionId?: string;
   /** Credential proxy rules — injected by control-plane from user config */
   proxyRules?: InvocationProxyRule[];
   /** Per-bot tool/skill whitelist config */

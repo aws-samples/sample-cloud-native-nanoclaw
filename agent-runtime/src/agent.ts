@@ -431,13 +431,25 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
   }, 'Query config');
 
   try {
+    // Resume strategy:
+    //   forceNewSession=true        → start fresh (no continue/resume)
+    //   resumeSessionId provided    → resume that specific session (robust:
+    //                                 searches all project dirs, not just cwd)
+    //   otherwise                   → continue: true (fallback for bootstrap /
+    //                                 first invocation before sessionId known)
+    const resumeOrContinue: { continue?: boolean; resume?: string } = params.forceNewSession
+      ? {}
+      : payload.resumeSessionId
+        ? { resume: payload.resumeSessionId }
+        : { continue: true };
+
     for await (const message of query({
       prompt,
       options: {
         model: payload.model || DEFAULT_MODEL,
         cwd: '/workspace/group',
         additionalDirectories: extraDirs,
-        continue: !params.forceNewSession,
+        ...resumeOrContinue,
         systemPrompt: {
           type: 'preset' as const,
           preset: 'claude_code' as const,

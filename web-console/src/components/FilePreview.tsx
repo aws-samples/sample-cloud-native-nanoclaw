@@ -24,7 +24,7 @@ function formatDate(iso: string): string {
 }
 
 const TEXT_EXTS = [
-  'txt','json','yml','yaml','js','ts','tsx','jsx','py','rs','go',
+  'txt','json','jsonl','ndjson','yml','yaml','js','ts','tsx','jsx','py','rs','go',
   'java','c','cpp','h','sh','toml','xml','csv','log','env','mjs',
   'cjs','css','scss','conf','ini',
 ];
