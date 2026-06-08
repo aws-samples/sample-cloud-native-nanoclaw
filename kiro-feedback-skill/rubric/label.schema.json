@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["id", "sentiment", "topic", "painpoint"],
+    "additionalProperties": false,
+    "properties": {
+      "id": { "type": "string" },
+      "sentiment": {
+        "type": "object",
+        "required": ["label", "score"],
+        "additionalProperties": false,
+        "properties": {
+          "label": { "enum": ["pos", "neu", "neg"] },
+          "score": { "type": "number", "minimum": -1, "maximum": 1 }
+        }
+      },
+      "topic": { "type": "string", "minLength": 1 },
+      "painpoint": {
+        "type": "object",
+        "required": ["flag"],
+        "additionalProperties": false,
+        "properties": {
+          "flag": { "type": "boolean" },
+          "severity": { "enum": ["high", "mid", "low", "unknown"] },
+          "type": { "type": "string" }
+        }
+      }
+    }
+  }
+}
