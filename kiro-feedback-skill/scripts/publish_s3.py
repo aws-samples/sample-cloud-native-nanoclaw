@@ -6,6 +6,10 @@ from botocore.config import Config
 
 _SLUG = re.compile(r"[^\w一-鿿]+")
 
+# S3 presigned URLs must use SigV4 so the URL carries X-Amz-Expires (the
+# default per-region behavior can fall back to the legacy SigV2 scheme).
+_SIGV4 = Config(signature_version="s3v4")
+
 
 def build_key(prefix: str, subject: str, stamp: str) -> str:
     slug = _SLUG.sub("-", subject).strip("-") or "report"
@@ -18,24 +22,13 @@ def upload_bytes(client, bucket: str, key: str, body: bytes) -> None:
 
 
 def presign(client, bucket: str, key: str, expiry: int) -> str:
-    # Ensure SigV4 presigned URLs by reconstructing the client with explicit config.
-    region = client.meta.region_name
-    session = client._endpoint._event_emitter  # unused — use boto3.session instead
-    sigv4_client = boto3.client(
-        "s3",
-        region_name=region,
-        aws_access_key_id=client._request_signer._credentials.access_key,
-        aws_secret_access_key=client._request_signer._credentials.secret_key,
-        config=Config(signature_version="s3v4"),
-    )
-    return sigv4_client.generate_presigned_url(
+    return client.generate_presigned_url(
         "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=expiry)
 
 
 def publish(report_path: str, config: dict, subject: str, stamp: str) -> str:
     """Upload report file and return a presigned URL (orchestration entrypoint)."""
-    client = boto3.client("s3", region_name=config["region"],
-                          config=Config(signature_version="s3v4"))
+    client = boto3.client("s3", region_name=config["region"], config=_SIGV4)
     key = build_key(config["prefix"], subject, stamp)
     upload_bytes(client, config["bucket"], key, Path(report_path).read_bytes())
     return presign(client, config["bucket"], key, config["presign_expiry_seconds"])

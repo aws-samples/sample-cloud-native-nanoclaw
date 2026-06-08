@@ -1,4 +1,5 @@
 import boto3
+from botocore.config import Config
 from botocore.stub import Stubber
 from scripts import publish_s3
 
@@ -21,7 +22,8 @@ def test_upload_sets_html_content_type():
 
 def test_presign_returns_url():
     client = boto3.client("s3", region_name="us-west-2",
-                          aws_access_key_id="x", aws_secret_access_key="y")
+                          aws_access_key_id="x", aws_secret_access_key="y",
+                          config=Config(signature_version="s3v4"))
     url = publish_s3.presign(client, "b", "k.html", 3600)
     assert url.startswith("https://")
     assert "X-Amz-Expires=3600" in url
