@@ -61,6 +61,7 @@ if [ "$DEPLOY_MODE" != "agentcore" ] && [ "$DEPLOY_MODE" != "ecs" ]; then
 fi
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+case "$REGION" in cn-*) PARTITION="aws-cn" ;; us-gov-*) PARTITION="aws-us-gov" ;; *) PARTITION="aws" ;; esac
 log "  AWS Account: ${ACCOUNT_ID}"
 log "  Region:      ${REGION}"
 log "  Stage:       ${STAGE}"
@@ -164,6 +165,18 @@ if [ "$DEPLOY_MODE" = "agentcore" ]; then
 
 log "Step 8: Register AgentCore runtime"
 
+# ── Enable CloudWatch Transaction Search (one-time, account-wide) ────────────
+# Required for AgentCore Observability spans/traces to be searchable in the
+# GenAI Observability dashboard. Idempotent — safe to run on every deploy.
+log "  Enabling CloudWatch Transaction Search (AgentCore Observability)"
+TS_POLICY=$(jq -n --arg p "$PARTITION" --arg r "$REGION" --arg a "$ACCOUNT_ID" \
+  '{Version:"2012-10-17",Statement:[{Sid:"TransactionSearchXRayAccess",Effect:"Allow",Principal:{Service:"xray.amazonaws.com"},Action:"logs:PutLogEvents",Resource:["arn:\($p):logs:\($r):\($a):log-group:aws/spans:*","arn:\($p):logs:\($r):\($a):log-group:/aws/application-signals/data:*"],Condition:{ArnLike:{"aws:SourceArn":"arn:\($p):xray:\($r):\($a):*"},StringEquals:{"aws:SourceAccount":$a}}}]}')
+aws logs put-resource-policy --policy-name "ClawBotTransactionSearch" \
+  --policy-document "$TS_POLICY" --region "$REGION" >/dev/null 2>&1 \
+  && log "    Resource policy applied" || log "    WARN: put-resource-policy failed (may lack perms) — continuing"
+aws xray update-trace-segment-destination --destination CloudWatchLogs --region "$REGION" >/dev/null 2>&1 \
+  && log "    Trace segment destination -> CloudWatch Logs" || log "    WARN: update-trace-segment-destination failed — continuing"
+
 # Read ECS env vars needed by agent-runtime from the control-plane stack
 SCOPED_ROLE_ARN=$(get_stack_output "${STACK_PREFIX}-Agent" "AgentScopedRoleArn" 2>/dev/null || echo "")
 SCHEDULER_ROLE_ARN=$(get_stack_output "${STACK_PREFIX}-Agent" "SchedulerRoleArn" 2>/dev/null || echo "")
@@ -206,7 +219,8 @@ ENV_VARS_JSON=$(jq -n \
   --arg tasks "$TASKS_TABLE" \
   --arg scheduler "$SCHEDULER_ROLE_ARN" \
   --arg sqsarn "$SQS_MESSAGES_ARN" \
-  '{AWS_REGION:$region,CLAUDE_CODE_USE_BEDROCK:"1",SCOPED_ROLE_ARN:$scoped,SESSION_BUCKET:$bucket,SQS_REPLIES_URL:$reply,TABLE_TASKS:$tasks,SCHEDULER_ROLE_ARN:$scheduler,SQS_MESSAGES_ARN:$sqsarn}')
+  --arg xrayotlp "https://xray.${REGION}.amazonaws.com/v1/traces" \
+  '{AWS_REGION:$region,CLAUDE_CODE_USE_BEDROCK:"1",SCOPED_ROLE_ARN:$scoped,SESSION_BUCKET:$bucket,SQS_REPLIES_URL:$reply,TABLE_TASKS:$tasks,SCHEDULER_ROLE_ARN:$scheduler,SQS_MESSAGES_ARN:$sqsarn,AGENT_OBSERVABILITY_ENABLED:"true",OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:$xrayotlp,OTEL_AWS_APPLICATION_SIGNALS_ENABLED:"false",OTEL_TRACES_EXPORTER:"otlp",OTEL_LOGS_EXPORTER:"none",OTEL_METRICS_EXPORTER:"none"}')
 
 # Check if runtime already exists
 EXISTING_RUNTIME_ARN=""

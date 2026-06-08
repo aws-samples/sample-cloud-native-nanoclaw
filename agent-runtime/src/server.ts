@@ -14,6 +14,8 @@ import { handleInvocation } from './agent.js';
 import { sendFinalReply, sendErrorReply } from './mcp-tools.js';
 import { registerTask } from './task-registration.js';
 import { startIdleMonitor, resetIdleTimer, pauseIdleTimer } from './idle-monitor.js';
+import { context, propagation, type Context } from '@opentelemetry/api';
+import { withInvocationSpan } from './tracing.js';
 import type { InvocationPayload } from '@clawbot/shared';
 import { formatOutbound } from '@clawbot/shared/text-utils';
 
@@ -71,21 +73,29 @@ app.post<{ Body: InvocationPayload }>('/invocations', async (request, reply) => 
   logger.info({ botId: payload.botId, groupJid: payload.groupJid }, 'Invocation received');
   setBusy();
 
+  // Extract the trace context AgentCore injects into the request (X-Amzn-Trace-Id /
+  // traceparent) NOW, while the headers are in scope. The agent runs fire-and-forget
+  // after we respond, so without capturing this here the invocation span would start
+  // a detached root trace instead of a child of AgentCore.Runtime.Invoke.
+  const parentCtx = propagation.extract(context.active(), request.headers);
+
   // Pause idle timer while busy — prevents long-running invocations (>15 min)
   // from being killed mid-execution. Timer restarts in runInBackground's finally block.
   if (process.env.AGENT_MODE === 'ecs') pauseIdleTimer();
 
   // Fire-and-forget: run in background, respond immediately
-  runInBackground(payload).catch((err) => {
+  runInBackground(payload, parentCtx).catch((err) => {
     logger.error(err, 'Background invocation crashed unexpectedly');
   });
 
   return reply.send({ status: 'accepted' });
 });
 
-async function runInBackground(payload: InvocationPayload): Promise<void> {
+async function runInBackground(payload: InvocationPayload, parentCtx: Context): Promise<void> {
   try {
-    const result = await handleInvocation(payload, logger);
+    const result = await context.with(parentCtx, () =>
+      withInvocationSpan(payload, () => handleInvocation(payload, logger)),
+    );
 
     if (result.status === 'success' && result.result) {
       const text = result.result.trim();
