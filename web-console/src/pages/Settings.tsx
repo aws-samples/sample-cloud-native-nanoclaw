@@ -19,10 +19,14 @@ type Tab = 'providers' | 'credentials';
 const BEDROCK_PRESETS = [
   'global.anthropic.claude-sonnet-4-6',
   'global.anthropic.claude-opus-4-6-v1',
+  'global.anthropic.claude-opus-4-7',
+  'global.anthropic.claude-opus-4-8',
 ];
 const ANTHROPIC_PRESETS = [
   'claude-sonnet-4-6',
   'claude-opus-4-6',
+  'claude-opus-4-7',
+  'claude-opus-4-8',
 ];
 
 // ── Providers Tab (Admin only) ────────────────────────────────────────────
