@@ -42,11 +42,20 @@ import { buildAppendContent } from './system-prompt.js';
 import { getScopedClients } from './scoped-credentials.js';
 import { startCredentialProxy, type CredentialProxy } from './credential-proxy.js';
 import { createToolWhitelistHook } from './tool-whitelist.js';
+import { sendIntermediateMessage } from './mcp-tools.js';
 
 const SESSION_BUCKET = process.env.SESSION_BUCKET || '';
 const DEFAULT_MODEL = 'global.anthropic.claude-sonnet-4-6';
 const secretsManager = new SecretsManagerClient({});
 const MCP_PACKAGES_DIR = '/home/node/.mcp-packages';
+
+// Reply-type MCP tools deliver their own message to the channel. Narration that
+// accompanies only these would duplicate what the tool already sends, so we don't
+// stream it (see the 'assistant' case in runAgentQuery).
+const REPLY_TOOL_NAMES = new Set([
+  'mcp__nanoclawbot__send_message',
+  'mcp__nanoclawbot__send_file',
+]);
 
 // ---------------------------------------------------------------------------
 // Dynamic MCP server helpers
@@ -396,6 +405,7 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
   let newSessionId: string | undefined;
   let lastResult: string | null = null;
   let lastAssistantText: string | null = null; // Track last non-empty text from assistant
+  let lastStreamedText: string | null = null; // Narration already streamed live to the channel
   let messageCount = 0;
   let resultCount = 0;
   let tokensUsed = 0;
@@ -552,6 +562,21 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
           if (fullText) {
             lastAssistantText = fullText;
           }
+          // Stream the model's narration (text that precedes a tool call) to the
+          // channel in real-time, reusing the send_message reply path. We only do
+          // this when the message contains a non-reply tool call (a real action
+          // like search/bash/MCP): text-only messages are the final answer
+          // (delivered by sendFinalReply), and messages whose only tools are
+          // send_message/send_file already deliver their own content, so streaming
+          // the narration would duplicate it. Best-effort — a failed send must
+          // never break the agent loop.
+          const hasActionTool = toolUses.some((name) => !!name && !REPLY_TOOL_NAMES.has(name));
+          if (fullText && hasActionTool) {
+            lastStreamedText = fullText;
+            await sendIntermediateMessage(payload, fullText).catch((e) =>
+              logger.warn({ err: e }, 'Failed to stream intermediate narration'),
+            );
+          }
           logger.info(
             {
               model: msg?.model,
@@ -631,6 +656,13 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
   // assistant-level text at all — surface a canned confirmation so the user
   // sees the command actually did something.
   let finalResult = lastResult || lastAssistantText;
+  // If the final fallback is text we already streamed live as narration (rare:
+  // the turn ended on a tool-call message, e.g. maxTurns reached or empty SDK
+  // result), don't send it twice — let server.ts emit a completion signal
+  // (null result) to unblock the FIFO queue instead.
+  if (finalResult && finalResult === lastStreamedText) {
+    finalResult = null;
+  }
   if (!finalResult && params.payload.sdkCommand) {
     finalResult = params.payload.sdkCommand === 'compact'
       ? '✓ 对话历史已压缩'
