@@ -82,6 +82,35 @@ export async function sendMessage(
 }
 
 // ---------------------------------------------------------------------------
+// sendIntermediateMessage — stream the agent's narration to the channel
+// in real-time, reusing the same reply-queue path as send_message.
+// Takes the InvocationPayload (what the agent loop has on hand) instead of an
+// McpToolContext, since the send doesn't need scoped credentials. No metadata
+// ⇒ the control plane treats it as an intermediate progress message.
+// ---------------------------------------------------------------------------
+
+export async function sendIntermediateMessage(
+  payload: InvocationPayload,
+  text: string,
+): Promise<void> {
+  const replyPayload: SqsTextReplyPayload = {
+    type: 'reply',
+    botId: payload.botId,
+    groupJid: payload.groupJid,
+    channelType: payload.channelType,
+    text,
+    timestamp: new Date().toISOString(),
+  };
+
+  await replySqs.send(
+    new SendMessageCommand({
+      QueueUrl: REPLY_QUEUE_URL,
+      MessageBody: JSON.stringify(replyPayload),
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // send_file — Send a file to a chat
 // Uploads to S3, then sends an SqsFileReplyPayload to the reply queue
 // so the control plane can deliver it via the appropriate channel adapter.
