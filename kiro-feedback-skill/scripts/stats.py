@@ -10,15 +10,36 @@ STOPWORDS = {
     "就", "都", "这", "那", "有", "个", "啊", "吧", "吗", "呢", "与", "及",
     "对", "为", "等", "把", "被", "让", "向", "从", "到", "我们", "你们",
 }
+
+# Common English function words, lower-cased. Mixed CN/EN corpora (e.g. web
+# 舆情 of an English-named product) otherwise let these dominate term frequency.
+EN_STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "if", "then", "than", "as", "of",
+    "to", "in", "on", "at", "by", "for", "with", "from", "into", "over",
+    "under", "out", "up", "down", "off", "about", "after", "before",
+    "between", "per", "via", "vs", "is", "are", "was", "were", "be", "been",
+    "being", "am", "do", "does", "did", "has", "have", "had", "will", "would",
+    "can", "could", "should", "may", "might", "must", "shall", "not", "no",
+    "yes", "so", "also", "just", "more", "most", "some", "all", "any", "each",
+    "how", "why", "what", "when", "which", "who", "whom", "whose", "where",
+    "this", "that", "these", "those", "it", "its", "i", "me", "my", "we",
+    "our", "us", "you", "your", "they", "them", "their", "he", "him", "his",
+    "she", "her", "get", "got", "new", "now",
+}
 _NON_WORD = re.compile(r"^[\W\d_]+$", re.UNICODE)
 
 
 def tokenize(text: str):
-    """Jieba tokenization, dropping stopwords, punctuation, and single chars."""
+    """Jieba tokenization, dropping stopwords, punctuation, and single chars.
+
+    Stopword removal covers both the Chinese set (exact match) and common
+    English function words (case-insensitive), so mixed CN/EN corpora work.
+    """
     out = []
     for tok in jieba.cut(text or ""):
         tok = tok.strip()
-        if len(tok) < 2 or tok in STOPWORDS or _NON_WORD.match(tok):
+        if (len(tok) < 2 or tok in STOPWORDS or tok.lower() in EN_STOPWORDS
+                or _NON_WORD.match(tok)):
             continue
         out.append(tok)
     return out

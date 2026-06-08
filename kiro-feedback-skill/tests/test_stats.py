@@ -41,3 +41,18 @@ def test_lifespan_first_last_span():
     assert ls["a"]["msg_count"] == 2
     assert ls["a"]["span_days"] == 1
     assert ls["c"]["span_days"] == 0
+
+
+def test_tokenize_drops_english_stopwords():
+    toks = stats.tokenize("the Kiro IDE and AWS vs Cursor via Claude")
+    # English function words dropped (case-insensitive)
+    for w in ("the", "and", "vs", "via"):
+        assert w not in toks
+    # meaningful terms (incl. uppercase acronyms) kept
+    assert "Kiro" in toks and "Cursor" in toks and "Claude" in toks
+    assert "AWS" in toks and "IDE" in toks
+
+
+def test_tokenize_english_stopwords_case_insensitive():
+    toks = stats.tokenize("The AND For Of THE")
+    assert toks == []
