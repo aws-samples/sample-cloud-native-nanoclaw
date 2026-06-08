@@ -59,7 +59,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --break-system-packages defusedxml
+RUN pip3 install --break-system-packages defusedxml jieba uv
 
 # Set Chromium path for agent-browser / Puppeteer
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
@@ -118,8 +118,15 @@ RUN chown -R node:node /workspace /home/node/.claude /home/node
 ENV CLAUDE_CODE_USE_BEDROCK=1
 ENV NODE_ENV=production
 ENV PORT=8080
+# Default OTEL service name for AgentCore Observability — AgentCore overrides
+# this via OTEL_RESOURCE_ATTRIBUTES when AGENT_OBSERVABILITY_ENABLED=true.
+ENV OTEL_SERVICE_NAME=clawbot-agent-runtime
 
 EXPOSE 8080
 
 USER node
-CMD ["node", "dist/server.js"]
+# `--import ./dist/otel.js` preloads the OpenTelemetry bootstrap BEFORE the app
+# so instrumentations can patch http/@aws-sdk/fastify. It is a near-no-op unless
+# AGENT_OBSERVABILITY_ENABLED=true (set by AgentCore Runtime when observability
+# is enabled), so this is safe in both agentcore and ecs modes.
+CMD ["node", "--import", "./dist/otel.js", "dist/server.js"]

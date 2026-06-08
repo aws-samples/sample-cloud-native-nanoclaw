@@ -174,6 +174,28 @@ export class AgentStack extends cdk.Stack {
           },
         }),
       );
+
+      // X-Ray — required for AgentCore Observability traces/spans to reach
+      // CloudWatch Transaction Search & the GenAI Observability dashboard.
+      // Matches the AgentCore Runtime execution-role policy in the AWS docs.
+      this.agentBaseRole.addToPolicy(
+        new iam.PolicyStatement({
+          sid: 'XRayTraceAccess',
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'xray:PutTraceSegments',
+            'xray:PutTelemetryRecords',
+            'xray:GetSamplingRules',
+            'xray:GetSamplingTargets',
+            // Required by the collector-less X-Ray OTLP endpoint
+            // (https://xray.<region>.amazonaws.com/v1/traces) used by AgentCore
+            // container runtimes for app-level (ADOT) span ingestion.
+            'xray:PutSpans',
+            'xray:PutSpansForIndexing',
+          ],
+          resources: ['*'],
+        }),
+      );
     }
 
     // Trust policy: allow AgentBaseRole to AssumeRole + TagSession (for ABAC)
