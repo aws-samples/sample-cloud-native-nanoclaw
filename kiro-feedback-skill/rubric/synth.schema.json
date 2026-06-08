@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["jtbd", "kano", "topics"],
+  "additionalProperties": false,
+  "properties": {
+    "jtbd": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["job", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "job": { "type": "string" },
+          "evidence": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "kano": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["feature", "category"],
+        "additionalProperties": false,
+        "properties": {
+          "feature": { "type": "string" },
+          "category": { "enum": ["must-be", "performance", "delight", "indifferent", "reverse"] },
+          "rationale": { "type": "string" }
+        }
+      }
+    },
+    "topics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "summary"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "summary": { "type": "string" },
+          "keywords": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}
