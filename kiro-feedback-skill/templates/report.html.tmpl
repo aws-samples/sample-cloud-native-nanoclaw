@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>舆情分析报告</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/echarts-wordcloud/2.1.0/echarts-wordcloud.min.js"></script>
+<style>
+  :root { --bg:#0f1117; --card:#1a1d27; --fg:#e6e8ee; --muted:#8b90a0; --accent:#4f8cff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+  header { padding:20px 28px; border-bottom:1px solid #262a36; }
+  header h1 { margin:0 0 6px; font-size:20px; }
+  header .meta { color:var(--muted); font-size:13px; }
+  .controls { display:flex; gap:16px; flex-wrap:wrap; align-items:center; padding:16px 28px; background:var(--card); border-bottom:1px solid #262a36; position:sticky; top:0; z-index:10; }
+  .controls label { color:var(--muted); margin-right:6px; }
+  .controls input, .controls select { background:#0f1117; color:var(--fg); border:1px solid #2c3142; border-radius:6px; padding:6px 8px; }
+  .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:16px; padding:20px 28px; }
+  .card { background:var(--card); border:1px solid #262a36; border-radius:10px; padding:16px; }
+  .card h3 { margin:0 0 10px; font-size:15px; }
+  .chart { width:100%; height:300px; }
+  .synth { padding:0 28px 28px; }
+  .synth .card { margin-bottom:16px; }
+  .pill { display:inline-block; background:#222838; color:#9fb4e0; border-radius:12px; padding:2px 10px; margin:2px; font-size:12px; }
+  .note { color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="subject">舆情分析报告</h1>
+  <div class="meta" id="meta"></div>
+</header>
+<div class="controls">
+  <span><label>起</label><input type="date" id="from"/></span>
+  <span><label>止</label><input type="date" id="to"/></span>
+  <span><label>渠道</label><select id="channel"><option value="">全部</option></select></span>
+  <span class="note" id="count"></span>
+</div>
+<div class="grid">
+  <div class="card"><h3>高频词</h3><div class="chart" id="c-wordcloud"></div></div>
+  <div class="card"><h3>主题占比</h3><div class="chart" id="c-topic"></div></div>
+  <div class="card"><h3>情感分布</h3><div class="chart" id="c-sentiment"></div></div>
+  <div class="card"><h3>发文量趋势</h3><div class="chart" id="c-trend"></div></div>
+  <div class="card"><h3>痛点信号（按严重度/类型）</h3><div class="chart" id="c-painpoint"></div></div>
+  <div class="card"><h3>帕累托二八（按作者/账号）</h3><div class="chart" id="c-pareto"></div></div>
+  <div class="card"><h3>MAU（活跃账号/月，口径：按账号近似）</h3><div class="chart" id="c-mau"></div></div>
+  <div class="card"><h3>留存 / 生命周期（账号活跃跨度分布）</h3><div class="chart" id="c-lifespan"></div></div>
+</div>
+<div class="synth">
+  <div class="card"><h3>JTBD（用户任务）<span class="note">— 全量洞察区，不随筛选变化</span></h3><div id="s-jtbd"></div></div>
+  <div class="card"><h3>Kano 分类<span class="note">— 全量</span></h3><div id="s-kano"></div></div>
+  <div class="card"><h3>主题建模解读<span class="note">— 全量</span></h3><div id="s-topics"></div></div>
+</div>
+
+<script>const DATA = /*__DATA__*/ {"meta":{},"records":[],"synthesis":{"jtbd":[],"kano":[],"topics":[]}};</script>
+<script>
+// ---- aggregation engine (mirror of scripts/stats.py) ----
+const recs = DATA.records || [];
+const day = ts => ts ? ts.slice(0,10) : null;
+const month = ts => ts ? ts.slice(0,7) : null;
+
+function filtered() {
+  const f = document.getElementById('from').value;
+  const t = document.getElementById('to').value;
+  const ch = document.getElementById('channel').value;
+  return recs.filter(r => {
+    if (ch && r.channel !== ch) return false;
+    const d = day(r.timestamp);
+    if (f && (!d || d < f)) return false;
+    if (t && (!d || d > t)) return false;
+    return true;
+  });
+}
+function termFreq(rs, n=80){ const m=new Map(); rs.forEach(r=>(r.tokens||[]).forEach(t=>m.set(t,(m.get(t)||0)+1))); return [...m.entries()].sort((a,b)=>b[1]-a[1]).slice(0,n); }
+function countBy(rs, fn){ const m=new Map(); rs.forEach(r=>{const k=fn(r); if(k!=null) m.set(k,(m.get(k)||0)+1);}); return m; }
+function dailyVolume(rs){ const m=countBy(rs,r=>day(r.timestamp)); return [...m.entries()].sort(); }
+function sentimentDist(rs){ return countBy(rs, r=>r.labels&&r.labels.sentiment?r.labels.sentiment.label:null); }
+function topicDist(rs){ return countBy(rs, r=>r.labels?r.labels.topic:null); }
+function painpointDist(rs){ const m=new Map(); rs.forEach(r=>{const p=r.labels&&r.labels.painpoint; if(p&&p.flag){const k=(p.severity||'unknown')+'·'+(p.type||'其他'); m.set(k,(m.get(k)||0)+1);}}); return m; }
+function pareto(rs){ const m=countBy(rs,r=>r.author||'unknown'); const ranked=[...m.entries()].sort((a,b)=>b[1]-a[1]); const total=ranked.reduce((s,x)=>s+x[1],0)||1; let cum=0; return ranked.map(([a,c])=>{cum+=c; return {author:a,count:c,cum:Math.round(cum/total*1000)/10};}); }
+function mau(rs){ const b=new Map(); rs.forEach(r=>{const mo=month(r.timestamp); if(mo){if(!b.has(mo))b.set(mo,new Set()); b.get(mo).add(r.author||'unknown');}}); return [...b.entries()].sort().map(([m,s])=>[m,s.size]); }
+function lifespanBuckets(rs){ const by=new Map(); rs.forEach(r=>{if(r.timestamp){if(!by.has(r.author))by.set(r.author,[]); by.get(r.author).push(r.timestamp);}}); const buckets={'1天':0,'2-7天':0,'8-30天':0,'30天+':0}; by.forEach(times=>{const ds=times.map(t=>new Date(t)).sort((a,b)=>a-b); const span=(ds[ds.length-1]-ds[0])/86400000; if(span<1)buckets['1天']++; else if(span<=7)buckets['2-7天']++; else if(span<=30)buckets['8-30天']++; else buckets['30天+']++;}); return buckets; }
+
+// ---- chart helpers ----
+const charts = {};
+function chart(id){ if(!charts[id]) charts[id]=echarts.init(document.getElementById(id)); return charts[id]; }
+const DARK = {textStyle:{color:'#e6e8ee'}, backgroundColor:'transparent'};
+const SENT_COLOR = {pos:'#3fb950', neu:'#8b90a0', neg:'#f85149'};
+
+function render(){
+  const rs = filtered();
+  document.getElementById('count').textContent = `当前 ${rs.length} 条 / 共 ${recs.length} 条`;
+
+  chart('c-wordcloud').setOption({...DARK, tooltip:{}, series:[{type:'wordCloud', gridSize:8, sizeRange:[12,52], rotationRange:[0,0], data: termFreq(rs).map(([name,value])=>({name,value}))}]});
+
+  const td=[...topicDist(rs).entries()].map(([name,value])=>({name,value}));
+  chart('c-topic').setOption({...DARK, tooltip:{trigger:'item'}, series:[{type:'pie', radius:['40%','70%'], data:td}]});
+
+  const sd=sentimentDist(rs);
+  chart('c-sentiment').setOption({...DARK, tooltip:{trigger:'item'}, series:[{type:'pie', radius:'65%', data:[...sd.entries()].map(([k,v])=>({name:k,value:v,itemStyle:{color:SENT_COLOR[k]}}))}]});
+
+  const dv=dailyVolume(rs);
+  chart('c-trend').setOption({...DARK, tooltip:{trigger:'axis'}, xAxis:{type:'category', data:dv.map(x=>x[0])}, yAxis:{type:'value'}, series:[{type:'line', smooth:true, areaStyle:{}, data:dv.map(x=>x[1])}]});
+
+  const pp=[...painpointDist(rs).entries()].sort((a,b)=>b[1]-a[1]);
+  chart('c-painpoint').setOption({...DARK, tooltip:{trigger:'axis'}, grid:{left:120}, xAxis:{type:'value'}, yAxis:{type:'category', data:pp.map(x=>x[0])}, series:[{type:'bar', data:pp.map(x=>x[1]), itemStyle:{color:'#f0883e'}}]});
+
+  const pa=pareto(rs);
+  chart('c-pareto').setOption({...DARK, tooltip:{trigger:'axis'}, xAxis:{type:'category', data:pa.map(x=>x.author)}, yAxis:[{type:'value',name:'条数'},{type:'value',name:'累计%',max:100}], series:[{type:'bar', data:pa.map(x=>x.count)},{type:'line', yAxisIndex:1, data:pa.map(x=>x.cum), itemStyle:{color:'#f85149'}}]});
+
+  const ma=mau(rs);
+  chart('c-mau').setOption({...DARK, tooltip:{trigger:'axis'}, xAxis:{type:'category', data:ma.map(x=>x[0])}, yAxis:{type:'value'}, series:[{type:'bar', data:ma.map(x=>x[1]), itemStyle:{color:'#4f8cff'}}]});
+
+  const lb=lifespanBuckets(rs);
+  chart('c-lifespan').setOption({...DARK, tooltip:{trigger:'item'}, series:[{type:'pie', radius:'65%', data:Object.entries(lb).map(([name,value])=>({name,value}))}]});
+}
+
+// ---- synthesis (static) ----
+function renderSynth(){
+  const s = DATA.synthesis || {};
+  document.getElementById('s-jtbd').innerHTML = (s.jtbd||[]).map(j=>`<p><b>${j.job}</b><br><span class="note">${(j.evidence||[]).join(' / ')}</span></p>`).join('') || '<span class="note">无</span>';
+  document.getElementById('s-kano').innerHTML = (s.kano||[]).map(k=>`<span class="pill">${k.feature} · ${k.category}</span>`).join('') || '<span class="note">无</span>';
+  document.getElementById('s-topics').innerHTML = (s.topics||[]).map(t=>`<p><b>${t.name}</b> — ${t.summary}<br>${(t.keywords||[]).map(w=>`<span class="pill">${w}</span>`).join('')}</p>`).join('') || '<span class="note">无</span>';
+}
+
+// ---- init ----
+function init(){
+  const m = DATA.meta || {};
+  document.getElementById('subject').textContent = (m.subject||'舆情分析报告');
+  document.getElementById('meta').textContent = [m.range, m.sources, m.coverage].filter(Boolean).join(' · ');
+  const channels = [...new Set(recs.map(r=>r.channel))].sort();
+  const sel = document.getElementById('channel');
+  channels.forEach(c=>{const o=document.createElement('option'); o.value=c; o.textContent=c; sel.appendChild(o);});
+  const dates = recs.map(r=>day(r.timestamp)).filter(Boolean).sort();
+  if(dates.length){ document.getElementById('from').value=dates[0]; document.getElementById('to').value=dates[dates.length-1]; }
+  ['from','to','channel'].forEach(id=>document.getElementById(id).addEventListener('change', render));
+  window.addEventListener('resize', ()=>Object.values(charts).forEach(c=>c.resize()));
+  renderSynth(); render();
+}
+init();
+</script>
+</body>
+</html>
