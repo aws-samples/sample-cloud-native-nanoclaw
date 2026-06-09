@@ -142,6 +142,10 @@ export function createTurnTracer(payload: InvocationPayload): TurnTracer {
     },
     recordAssistantTurn(turn) {
       const model = turn.responseModel || requestModel;
+      // Tool calls go in a span ATTRIBUTE, not span events: AgentCore's trace
+      // pipeline (X-Ray + Transaction Search aws/spans) drops OTEL span events
+      // entirely — only attributes survive — so addEvent() would be a no-op here.
+      const toolNames = (turn.toolUses ?? []).map((t) => t.name).filter((n): n is string => !!n);
       const span = tracer.startSpan(`chat ${model}`, {
         kind: SpanKind.CLIENT,
         startTime: turnStart,
@@ -160,14 +164,12 @@ export function createTurnTracer(payload: InvocationPayload): TurnTracer {
             'clawbot.usage.cache_read_input_tokens': turn.cacheReadTokens,
           }),
           ...(turn.finishReason && { 'gen_ai.response.finish_reasons': [turn.finishReason] }),
+          ...(toolNames.length > 0 && {
+            'gen_ai.tool.names': toolNames.join(','),
+            'gen_ai.tool.count': toolNames.length,
+          }),
         },
       });
-      for (const tool of turn.toolUses ?? []) {
-        span.addEvent('gen_ai.tool.message', {
-          'gen_ai.tool.name': tool.name ?? 'unknown',
-          'gen_ai.tool.call.id': tool.id ?? '',
-        });
-      }
       span.end();
     },
     finalizeFromResult(result) {
