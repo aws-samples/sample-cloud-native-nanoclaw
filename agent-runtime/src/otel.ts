@@ -29,6 +29,18 @@
  * Activation is gated on AGENT_OBSERVABILITY_ENABLED (set on the AgentCore
  * runtime by deploy.sh). Unset in local dev / ECS mode → this is a no-op.
  * DISABLE_ADOT_OBSERVABILITY=true also opts out.
+ *
+ * Span noise: when AGENT_OBSERVABILITY_ENABLED=true the distro auto-enables the
+ * `aws-sdk`, `http`, and `undici` instrumentations by default, which flood every
+ * trace with STS.AssumeRole / S3.GetObject / inbound-POST spans from this
+ * runtime's own session-sync + credential plumbing — none of which is the LLM
+ * call (that runs in the Claude Agent SDK subprocess, uninstrumented here; our
+ * GenAI spans are emitted manually in tracing.ts). deploy.sh therefore sets
+ * OTEL_NODE_DISABLED_INSTRUMENTATIONS=fs,dns,aws-sdk,http,undici so the trace is
+ * just AgentCore.Runtime.Invoke -> agent.invocation -> chat <model>. The distro
+ * honors that var and disabled wins over its enabled-list (see register.js /
+ * utils.js); parent-context extraction stays manual (server.ts), so disabling
+ * `http` does not break span nesting.
  */
 
 import { register } from 'node:module';
