@@ -196,6 +196,55 @@ export class AgentStack extends cdk.Stack {
           resources: ['*'],
         }),
       );
+
+      // Browser tool (AgentCore Browser) — agents run browser-based MCP tools in
+      // AgentCore-managed cloud browser sessions. Session lifecycle + automation stream.
+      this.agentBaseRole.addToPolicy(
+        new iam.PolicyStatement({
+          sid: 'BedrockAgentCoreBrowserSession',
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'bedrock-agentcore:StartBrowserSession',
+            'bedrock-agentcore:ConnectBrowserAutomationStream',
+            'bedrock-agentcore:GetBrowserSession',
+            'bedrock-agentcore:StopBrowserSession',
+            'bedrock-agentcore:ListBrowserSessions',
+          ],
+          resources: ['*'],
+        }),
+      );
+
+      // Browser profile management — create/list/get/delete persistent browser profiles.
+      this.agentBaseRole.addToPolicy(
+        new iam.PolicyStatement({
+          sid: 'BedrockAgentCoreBrowserProfileManagement',
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'bedrock-agentcore:CreateBrowserProfile',
+            'bedrock-agentcore:ListBrowserProfiles',
+            'bedrock-agentcore:GetBrowserProfile',
+            'bedrock-agentcore:DeleteBrowserProfile',
+          ],
+          resources: [`arn:${this.partition}:bedrock-agentcore:${this.region}:${this.account}:browser-profile/*`],
+        }),
+      );
+
+      // Browser profile usage — start sessions with a profile and persist session state.
+      this.agentBaseRole.addToPolicy(
+        new iam.PolicyStatement({
+          sid: 'BedrockAgentCoreBrowserProfileUsage',
+          effect: iam.Effect.ALLOW,
+          actions: [
+            'bedrock-agentcore:StartBrowserSession',
+            'bedrock-agentcore:SaveBrowserSessionProfile',
+          ],
+          resources: [
+            `arn:${this.partition}:bedrock-agentcore:${this.region}:${this.account}:browser-profile/*`,
+            `arn:${this.partition}:bedrock-agentcore:${this.region}:${this.account}:browser-custom/*`,
+            `arn:${this.partition}:bedrock-agentcore:${this.region}:${this.account}:browser/*`,
+          ],
+        }),
+      );
     }
 
     // Trust policy: allow AgentBaseRole to AssumeRole + TagSession (for ABAC)
