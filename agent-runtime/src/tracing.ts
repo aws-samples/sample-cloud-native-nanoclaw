@@ -87,6 +87,13 @@ export async function withInvocationSpan<T>(
   });
 }
 
+/** Max chars for a content attribute. X-Ray caps a whole segment at ~64KB, so
+ *  per-turn input/output/tool text is truncated to keep spans well under that. */
+const MAX_CONTENT_CHARS = 4000;
+function truncate(s: string, max = MAX_CONTENT_CHARS): string {
+  return s.length > max ? `${s.slice(0, max)}…[+${s.length - max} chars]` : s;
+}
+
 /** Per-assistant-turn data extracted from the SDK message stream. */
 export interface AssistantTurn {
   /** Model that produced this response (`message.message.model`). */
@@ -97,8 +104,12 @@ export interface AssistantTurn {
   cacheReadTokens?: number;
   /** `message.message.stop_reason` for this turn. */
   finishReason?: string | null;
-  /** tool_use blocks issued by the model in this turn. */
-  toolUses?: Array<{ name?: string; id?: string }>;
+  /** tool_use blocks issued by the model in this turn (name + args). */
+  toolUses?: Array<{ name?: string; id?: string; input?: unknown }>;
+  /** Assistant text produced this turn (the model output). */
+  outputText?: string;
+  /** Input that drove this turn: the user prompt (turn 0) or tool results (later). */
+  inputText?: string;
 }
 
 /** Final-result aggregates extracted from the SDK `result` message. */
@@ -127,11 +138,12 @@ export interface TurnTracer {
   finalizeFromResult(result: ResultAggregate): void;
 }
 
-export function createTurnTracer(payload: InvocationPayload): TurnTracer {
+export function createTurnTracer(payload: InvocationPayload, systemPrompt?: string): TurnTracer {
   const system = genAiSystem(payload);
   const requestModel = payload.model ?? 'default';
   const sessionId = sessionIdFor(payload);
   let turnStart = Date.now();
+  let turnIndex = 0;
 
   return {
     begin() {
@@ -146,6 +158,11 @@ export function createTurnTracer(payload: InvocationPayload): TurnTracer {
       // pipeline (X-Ray + Transaction Search aws/spans) drops OTEL span events
       // entirely — only attributes survive — so addEvent() would be a no-op here.
       const toolNames = (turn.toolUses ?? []).map((t) => t.name).filter((n): n is string => !!n);
+      // Tool call arguments, joined as "name: {json}" lines (truncated).
+      const toolArgs = (turn.toolUses ?? [])
+        .filter((t) => t.input != null)
+        .map((t) => `${t.name ?? 'tool'}: ${JSON.stringify(t.input)}`)
+        .join('\n');
       const span = tracer.startSpan(`chat ${model}`, {
         kind: SpanKind.CLIENT,
         startTime: turnStart,
@@ -168,9 +185,18 @@ export function createTurnTracer(payload: InvocationPayload): TurnTracer {
             'gen_ai.tool.names': toolNames.join(','),
             'gen_ai.tool.count': toolNames.length,
           }),
+          // Content — visible per-turn in the span's Metadata (truncated). The
+          // dedicated GenAI "Events" panel needs the logs pipeline; these carry
+          // the same input/output/tool detail as trace attributes instead.
+          ...(turn.inputText && { 'gen_ai.input': truncate(turn.inputText) }),
+          ...(turn.outputText && { 'gen_ai.output': truncate(turn.outputText) }),
+          ...(toolArgs && { 'gen_ai.tool.arguments': truncate(toolArgs) }),
+          // System prompt once, on the first turn (it's identical across turns).
+          ...(turnIndex === 0 && systemPrompt && { 'gen_ai.system.prompt': truncate(systemPrompt) }),
         },
       });
       span.end();
+      turnIndex++;
     },
     finalizeFromResult(result) {
       const span = trace.getActiveSpan();
