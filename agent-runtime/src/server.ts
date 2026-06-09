@@ -63,7 +63,12 @@ function ensureIdleMonitorStarted() {
 //     timer never elapses — the container is never reclaimed and keeps emitting a
 //     /ping span every second forever. Returning the real idle-start time lets the
 //     timer run out and the warm container get recycled.
-app.get('/ping', async () => {
+//
+// `logLevel: 'silent'` suppresses Fastify's automatic "incoming request" /
+// "request completed" logs for this route only. AgentCore probes /ping ~1×/sec,
+// so without this the runtime's CloudWatch log group is drowned in ping logs.
+// Other routes (e.g. /invocations) keep their normal request logging.
+app.get('/ping', { logLevel: 'silent' }, async () => {
   return {
     status: busy ? 'HealthyBusy' : 'Healthy',
     time_of_last_update: busy ? Math.floor(Date.now() / 1000) : lastStatusChange,
