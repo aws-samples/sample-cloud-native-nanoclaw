@@ -19,3 +19,4 @@ cdk.context.json
 web-console/.env.production
 infra/cdk.context.json
 openclaw/
+.codegraph/
