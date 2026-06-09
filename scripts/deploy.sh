@@ -177,6 +177,32 @@ aws logs put-resource-policy --policy-name "ClawBotTransactionSearch" \
 aws xray update-trace-segment-destination --destination CloudWatchLogs --region "$REGION" >/dev/null 2>&1 \
   && log "    Trace segment destination -> CloudWatch Logs" || log "    WARN: update-trace-segment-destination failed — continuing"
 
+# ── Self-check: confirm the trace pipeline can actually deliver spans ─────────
+# These two settings are the usual reason agent spans never reach the GenAI
+# Observability dashboard despite the code emitting them: the segment
+# destination isn't ACTIVE on CloudWatch Logs, or X-Ray sampling drops 100%.
+# Non-fatal — print findings so a failed deploy doesn't hide a silent gap.
+log "  Self-check: trace delivery pipeline"
+SEG_DEST=$(aws xray get-trace-segment-destination --region "$REGION" 2>/dev/null || echo '{}')
+SEG_DEST_TYPE=$(echo "$SEG_DEST" | jq -r '.Destination // "unknown"')
+SEG_DEST_STATUS=$(echo "$SEG_DEST" | jq -r '.Status // "unknown"')
+if [ "$SEG_DEST_TYPE" = "CloudWatchLogs" ] && [ "$SEG_DEST_STATUS" = "ACTIVE" ]; then
+  log "    OK: segment destination = CloudWatchLogs (ACTIVE)"
+else
+  log "    WARN: segment destination = ${SEG_DEST_TYPE} (${SEG_DEST_STATUS}) — spans may not reach aws/spans until ACTIVE"
+fi
+# Default sampling rule: spans are dropped only if BOTH FixedRate and the
+# per-second reservoir are 0. The reservoir guarantees a floor even at rate 0.
+SAMPLING=$(aws xray get-sampling-rules --region "$REGION" 2>/dev/null || echo '{}')
+DEFAULT_RULE=$(echo "$SAMPLING" | jq -c '[.SamplingRuleRecords[].SamplingRule | select(.RuleName=="Default")][0] // {}')
+FIXED_RATE=$(echo "$DEFAULT_RULE" | jq -r '.FixedRate // "unknown"')
+RESERVOIR=$(echo "$DEFAULT_RULE" | jq -r '.ReservoirSize // "unknown"')
+if [ "$FIXED_RATE" = "0" ] && [ "$RESERVOIR" = "0" ]; then
+  log "    WARN: X-Ray Default sampling rule drops 100% (FixedRate=0, ReservoirSize=0) — raise it to see agent traces"
+else
+  log "    OK: X-Ray Default sampling rule FixedRate=${FIXED_RATE}, ReservoirSize=${RESERVOIR}"
+fi
+
 # Read ECS env vars needed by agent-runtime from the control-plane stack
 SCOPED_ROLE_ARN=$(get_stack_output "${STACK_PREFIX}-Agent" "AgentScopedRoleArn" 2>/dev/null || echo "")
 SCHEDULER_ROLE_ARN=$(get_stack_output "${STACK_PREFIX}-Agent" "SchedulerRoleArn" 2>/dev/null || echo "")
@@ -220,7 +246,16 @@ ENV_VARS_JSON=$(jq -n \
   --arg scheduler "$SCHEDULER_ROLE_ARN" \
   --arg sqsarn "$SQS_MESSAGES_ARN" \
   --arg xrayotlp "https://xray.${REGION}.amazonaws.com/v1/traces" \
-  '{AWS_REGION:$region,CLAUDE_CODE_USE_BEDROCK:"1",SCOPED_ROLE_ARN:$scoped,SESSION_BUCKET:$bucket,SQS_REPLIES_URL:$reply,TABLE_TASKS:$tasks,SCHEDULER_ROLE_ARN:$scheduler,SQS_MESSAGES_ARN:$sqsarn,AGENT_OBSERVABILITY_ENABLED:"true",OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:$xrayotlp,OTEL_AWS_APPLICATION_SIGNALS_ENABLED:"false",OTEL_TRACES_EXPORTER:"otlp",OTEL_LOGS_EXPORTER:"none",OTEL_METRICS_EXPORTER:"none"}')
+  '{AWS_REGION:$region,CLAUDE_CODE_USE_BEDROCK:"1",SCOPED_ROLE_ARN:$scoped,SESSION_BUCKET:$bucket,SQS_REPLIES_URL:$reply,TABLE_TASKS:$tasks,SCHEDULER_ROLE_ARN:$scheduler,SQS_MESSAGES_ARN:$sqsarn,AGENT_OBSERVABILITY_ENABLED:"true",OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:$xrayotlp,OTEL_AWS_APPLICATION_SIGNALS_ENABLED:"false",OTEL_TRACES_EXPORTER:"otlp",OTEL_LOGS_EXPORTER:"none",OTEL_METRICS_EXPORTER:"none",OTEL_NODE_DISABLED_INSTRUMENTATIONS:"fs,dns,aws-sdk,http,undici"}')
+# OTEL_NODE_DISABLED_INSTRUMENTATIONS: the ADOT distro auto-instruments aws-sdk +
+# http + undici by default (AGENT_OBSERVABILITY_ENABLED=true), flooding every
+# trace with STS.AssumeRole / S3.GetObject / inbound-POST spans from the runtime's
+# own session-sync + credential plumbing. The real LLM calls run in the Claude
+# Agent SDK subprocess (not instrumented here) and our GenAI spans are emitted
+# manually (tracing.ts), so none of these are needed. Disabling them leaves just
+# AgentCore.Runtime.Invoke -> agent.invocation -> chat <model>. (fs,dns are the
+# distro's own defaults, preserved here since we override the var.) Disabled wins
+# over the distro's enabled-list; parent-context extraction is manual (server.ts).
 
 # Check if runtime already exists
 EXISTING_RUNTIME_ARN=""

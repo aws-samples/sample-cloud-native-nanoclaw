@@ -43,6 +43,7 @@ import { getScopedClients } from './scoped-credentials.js';
 import { startCredentialProxy, type CredentialProxy } from './credential-proxy.js';
 import { createToolWhitelistHook } from './tool-whitelist.js';
 import { sendIntermediateMessage } from './mcp-tools.js';
+import { createTurnTracer } from './tracing.js';
 
 const SESSION_BUCKET = process.env.SESSION_BUCKET || '';
 const DEFAULT_MODEL = 'global.anthropic.claude-sonnet-4-6';
@@ -453,6 +454,12 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
         ? { resume: payload.resumeSessionId }
         : { continue: true };
 
+    // GenAI tracing: reconstruct per-turn `chat` spans from the SDK message
+    // stream (the LLM calls happen in a subprocess and aren't auto-instrumented).
+    // No-op unless AgentCore observability is enabled (see tracing.ts / otel.ts).
+    const turns = createTurnTracer(payload);
+    turns.begin();
+
     for await (const message of query({
       prompt,
       options: {
@@ -548,7 +555,7 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
         }
 
         case 'assistant': {
-          const msg = (message as { message?: { content?: unknown[]; model?: string; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } } }).message;
+          const msg = (message as { message?: { content?: unknown[]; model?: string; stop_reason?: string | null; usage?: { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } } }).message;
           const usage = msg?.usage;
           if (usage) {
             tokensUsed += (usage.input_tokens || 0) + (usage.output_tokens || 0) + (usage.cache_creation_input_tokens || 0);
@@ -589,6 +596,16 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
             },
             'Assistant response',
           );
+          // GenAI trace: emit a `chat <model>` span for this inference turn.
+          turns.recordAssistantTurn({
+            responseModel: msg?.model,
+            inputTokens: usage?.input_tokens,
+            outputTokens: usage?.output_tokens,
+            cacheCreationTokens: usage?.cache_creation_input_tokens,
+            cacheReadTokens: usage?.cache_read_input_tokens,
+            finishReason: msg?.stop_reason,
+            toolUses: content?.filter((b) => b.type === 'tool_use').map((b) => ({ name: b.name, id: b.id })),
+          });
           break;
         }
 
@@ -597,6 +614,9 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
           if (userMsg.parent_tool_use_id) {
             logger.info({ toolUseId: userMsg.parent_tool_use_id }, 'Tool result');
           }
+          // A tool-result message means the model's next inference is about to
+          // begin — start timing the next `chat` span from here.
+          turns.markInferenceStart();
           break;
         }
 
@@ -624,6 +644,14 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
             },
             'Agent result',
           );
+          // GenAI trace: roll final usage/turns/cost up onto the invoke_agent span.
+          turns.finalizeFromResult({
+            inputTokens: rm.usage?.input_tokens,
+            outputTokens: rm.usage?.output_tokens,
+            numTurns: rm.num_turns,
+            costUsd: rm.total_cost_usd,
+            finishReason: rm.stop_reason,
+          });
           break;
         }
 
