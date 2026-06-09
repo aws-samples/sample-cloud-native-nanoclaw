@@ -457,8 +457,10 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
     // GenAI tracing: reconstruct per-turn `chat` spans from the SDK message
     // stream (the LLM calls happen in a subprocess and aren't auto-instrumented).
     // No-op unless AgentCore observability is enabled (see tracing.ts / otel.ts).
-    const turns = createTurnTracer(payload);
+    const turns = createTurnTracer(payload, appendContent);
     turns.begin();
+    // Input that drove the current turn: the user prompt first, then tool results.
+    let pendingInput: string = prompt;
 
     for await (const message of query({
       prompt,
@@ -561,7 +563,7 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
             tokensUsed += (usage.input_tokens || 0) + (usage.output_tokens || 0) + (usage.cache_creation_input_tokens || 0);
           }
           // Extract tool_use blocks from assistant content
-          const content = msg?.content as Array<{ type: string; name?: string; id?: string; text?: string }> | undefined;
+          const content = msg?.content as Array<{ type: string; name?: string; id?: string; text?: string; input?: unknown }> | undefined;
           const toolUses = content?.filter((b) => b.type === 'tool_use').map((b) => b.name) || [];
           const textBlocks = content?.filter((b) => b.type === 'text').map((b) => (b.text || '').slice(0, 200)) || [];
           // Track last non-empty assistant text for fallback when SDK result is empty
@@ -604,16 +606,45 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
             cacheCreationTokens: usage?.cache_creation_input_tokens,
             cacheReadTokens: usage?.cache_read_input_tokens,
             finishReason: msg?.stop_reason,
-            toolUses: content?.filter((b) => b.type === 'tool_use').map((b) => ({ name: b.name, id: b.id })),
+            toolUses: content?.filter((b) => b.type === 'tool_use').map((b) => ({ name: b.name, id: b.id, input: b.input })),
+            outputText: fullText || undefined,
+            inputText: pendingInput || undefined,
           });
+          pendingInput = ''; // consumed; the next turn's input is the tool results
           break;
         }
 
         case 'user': {
-          const userMsg = message as { parent_tool_use_id?: string | null; isSynthetic?: boolean };
+          const userMsg = message as {
+            parent_tool_use_id?: string | null;
+            isSynthetic?: boolean;
+            message?: { content?: unknown };
+          };
           if (userMsg.parent_tool_use_id) {
             logger.info({ toolUseId: userMsg.parent_tool_use_id }, 'Tool result');
           }
+          // Capture tool-result text as the next turn's input (for the chat span's
+          // gen_ai.input attribute). Tool results arrive as tool_result blocks whose
+          // `content` is a string or an array of {type:'text', text} parts.
+          const uc = userMsg.message?.content;
+          const resultText =
+            typeof uc === 'string'
+              ? uc
+              : Array.isArray(uc)
+                ? uc
+                    .map((b) => {
+                      const blk = b as { content?: unknown; text?: string };
+                      const inner = blk.content ?? blk.text;
+                      if (typeof inner === 'string') return inner;
+                      if (Array.isArray(inner)) {
+                        return inner.map((p) => (p as { text?: string }).text ?? '').join('');
+                      }
+                      return '';
+                    })
+                    .join('\n')
+                    .trim()
+                : '';
+          if (resultText) pendingInput = resultText;
           // A tool-result message means the model's next inference is about to
           // begin — start timing the next `chat` span from here.
           turns.markInferenceStart();

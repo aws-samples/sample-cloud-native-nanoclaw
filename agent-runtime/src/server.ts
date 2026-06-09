@@ -27,10 +27,14 @@ const port = Number(process.env.PORT) || 8080;
 
 const app = Fastify({ loggerInstance: logger });
 
-// Busy state tracking — reflects whether the agent is currently processing
+// Busy state tracking — reflects whether the agent is currently processing.
+// `lastStatusChange` (epoch seconds) records WHEN the busy↔idle transition
+// happened; it is what /ping reports as `time_of_last_update` while idle so
+// AgentCore's idle timer can elapse and reclaim the container (see /ping below).
 let busy = false;
-export function setBusy() { busy = true; }
-export function setIdle() { busy = false; }
+let lastStatusChange = Math.floor(Date.now() / 1000);
+export function setBusy() { busy = true; lastStatusChange = Math.floor(Date.now() / 1000); }
+export function setIdle() { busy = false; lastStatusChange = Math.floor(Date.now() / 1000); }
 
 // Idle monitor is deferred until the first /invocations — that is the moment
 // this container stops being a "warm pool" member and becomes a dedicated,
@@ -48,13 +52,26 @@ function ensureIdleMonitorStarted() {
 }
 
 // AgentCore health check — must never block, respond in < 100ms.
-// Response MUST include `time_of_last_update` per AgentCore HTTP protocol contract;
-// without it AgentCore cannot tell whether the `HealthyBusy` status is fresh and
-// falls back to `idleRuntimeSessionTimeout`, killing long-running agents at 15 min.
-app.get('/ping', async () => {
+// `time_of_last_update` (epoch seconds) is the contract AgentCore uses to decide
+// when to reclaim a container: it kills the runtime once `now - time_of_last_update`
+// exceeds the idle timeout. The two states need different values:
+//   • BUSY  → report `now`: a long-running (>15 min) invocation keeps refreshing
+//     the timestamp so AgentCore sees ongoing progress and does NOT idle-kill it
+//     mid-run (the reason this field exists at all).
+//   • IDLE  → report the FIXED time we became idle (`lastStatusChange`), NOT `now`.
+//     Reporting `now` while idle makes the timestamp perpetually fresh, so the idle
+//     timer never elapses — the container is never reclaimed and keeps emitting a
+//     /ping span every second forever. Returning the real idle-start time lets the
+//     timer run out and the warm container get recycled.
+//
+// `logLevel: 'silent'` suppresses Fastify's automatic "incoming request" /
+// "request completed" logs for this route only. AgentCore probes /ping ~1×/sec,
+// so without this the runtime's CloudWatch log group is drowned in ping logs.
+// Other routes (e.g. /invocations) keep their normal request logging.
+app.get('/ping', { logLevel: 'silent' }, async () => {
   return {
     status: busy ? 'HealthyBusy' : 'Healthy',
-    time_of_last_update: Math.floor(Date.now() / 1000),
+    time_of_last_update: busy ? Math.floor(Date.now() / 1000) : lastStatusChange,
   };
 });
 
