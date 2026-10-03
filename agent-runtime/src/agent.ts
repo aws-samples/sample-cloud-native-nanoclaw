@@ -407,6 +407,7 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
   let lastResult: string | null = null;
   let lastAssistantText: string | null = null; // Track last non-empty text from assistant
   let lastStreamedText: string | null = null; // Narration already streamed live to the channel
+  let pendingNarration: string | null = null; // Buffered narration awaiting the next action tool
   let messageCount = 0;
   let resultCount = 0;
   let tokensUsed = 0;
@@ -572,17 +573,34 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
             lastAssistantText = fullText;
           }
           // Stream the model's narration (text that precedes a tool call) to the
-          // channel in real-time, reusing the send_message reply path. We only do
-          // this when the message contains a non-reply tool call (a real action
-          // like search/bash/MCP): text-only messages are the final answer
-          // (delivered by sendFinalReply), and messages whose only tools are
-          // send_message/send_file already deliver their own content, so streaming
-          // the narration would duplicate it. Best-effort — a failed send must
-          // never break the agent loop.
+          // channel in real-time, reusing the send_message reply path.
+          //
+          // The Agent SDK delivers the model's narration text and its tool_use as
+          // SEPARATE assistant messages — they never co-occur in one message — so
+          // we buffer the latest narration text and flush it when the next *action*
+          // tool call arrives (a real step like search/bash/MCP). We skip reply
+          // tools (send_message/send_file), which already deliver their own content.
+          // The final answer is a trailing text message with no tool after it, so it
+          // is never flushed here — sendFinalReply delivers it. Best-effort: a failed
+          // send must never break the agent loop.
           const hasActionTool = toolUses.some((name) => !!name && !REPLY_TOOL_NAMES.has(name));
           if (fullText && hasActionTool) {
+            // Defensive: text + action in the same message (not observed today, but
+            // cheap to handle if the SDK ever combines them).
+            pendingNarration = null;
             lastStreamedText = fullText;
             await sendIntermediateMessage(payload, fullText).catch((e) =>
+              logger.warn({ err: e }, 'Failed to stream intermediate narration'),
+            );
+          } else if (fullText) {
+            // Text-only message — candidate narration for the next action tool.
+            pendingNarration = fullText;
+          } else if (hasActionTool && pendingNarration) {
+            // Tool-only message preceded by buffered narration — flush it now.
+            const narration = pendingNarration;
+            pendingNarration = null;
+            lastStreamedText = narration;
+            await sendIntermediateMessage(payload, narration).catch((e) =>
               logger.warn({ err: e }, 'Failed to stream intermediate narration'),
             );
           }
