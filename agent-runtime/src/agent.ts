@@ -474,6 +474,10 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
           type: 'preset' as const,
           preset: 'claude_code' as const,
           append: appendContent,
+          // appendContent varies per invocation (scheduled-task note, bot name,
+          // model) while sessions are resumed — render it fresh every request
+          // instead of letting the SDK pin the first one for the session.
+          snapshot: false,
         },
         // Same tool allowlist as NanoClaw's agent-runner
         allowedTools: [
