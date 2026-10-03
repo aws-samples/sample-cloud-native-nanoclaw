@@ -31,8 +31,11 @@ const app = Fastify({ loggerInstance: logger });
 // `lastStatusChange` (epoch seconds) records WHEN the busy↔idle transition
 // happened; it is what /ping reports as `time_of_last_update` while idle so
 // AgentCore's idle timer can elapse and reclaim the container (see /ping below).
+// Unset until the first busy↔idle transition: on AgentCore Runtime V2 the
+// process is restored from a snapshot, so a module-load timestamp would be the
+// snapshot time (possibly days old) and make a fresh instance look long-idle.
 let busy = false;
-let lastStatusChange = Math.floor(Date.now() / 1000);
+let lastStatusChange: number | undefined;
 export function setBusy() { busy = true; lastStatusChange = Math.floor(Date.now() / 1000); }
 export function setIdle() { busy = false; lastStatusChange = Math.floor(Date.now() / 1000); }
 
@@ -68,10 +71,13 @@ function ensureIdleMonitorStarted() {
 // "request completed" logs for this route only. AgentCore probes /ping ~1×/sec,
 // so without this the runtime's CloudWatch log group is drowned in ping logs.
 // Other routes (e.g. /invocations) keep their normal request logging.
+//   • Before the first invocation `lastStatusChange` is unset → report `now`; the
+//     invocation that created this session is about to arrive.
 app.get('/ping', { logLevel: 'silent' }, async () => {
+  const now = Math.floor(Date.now() / 1000);
   return {
     status: busy ? 'HealthyBusy' : 'Healthy',
-    time_of_last_update: busy ? Math.floor(Date.now() / 1000) : lastStatusChange,
+    time_of_last_update: busy ? now : (lastStatusChange ?? now),
   };
 });
 
