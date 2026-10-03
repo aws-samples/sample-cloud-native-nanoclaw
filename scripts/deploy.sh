@@ -21,6 +21,17 @@ ECR_AUTH_REPO="${PREFIX}-auth-service"
 # AgentCore runtime name
 AGENTCORE_NAME="${PREFIX}_${STAGE}"
 
+# AgentCore Runtime platform version. V2 restores each session from a snapshot
+# (faster, consistent cold starts; elastic memory) but is only offered in some
+# regions, so default to V2 there and V1 elsewhere. Override with
+# AGENTCORE_PLATFORM_VERSION=V1|V2. CloudFormation/CDK cannot set this — it is
+# applied on create/update-agent-runtime below.
+case "$REGION" in
+  us-east-1|us-east-2|us-west-2|eu-west-1|ap-northeast-1) DEFAULT_PLATFORM_VERSION="V2" ;;
+  *) DEFAULT_PLATFORM_VERSION="V1" ;;
+esac
+AGENTCORE_PLATFORM_VERSION="${AGENTCORE_PLATFORM_VERSION:-$DEFAULT_PLATFORM_VERSION}"
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 log()  { echo "==> [$(date +%H:%M:%S)] $*"; }
@@ -60,12 +71,22 @@ if [ "$DEPLOY_MODE" != "agentcore" ] && [ "$DEPLOY_MODE" != "ecs" ]; then
   exit 1
 fi
 
+if [ "$DEPLOY_MODE" = "agentcore" ]; then
+  if [ "$AGENTCORE_PLATFORM_VERSION" != "V1" ] && [ "$AGENTCORE_PLATFORM_VERSION" != "V2" ]; then
+    fail "AGENTCORE_PLATFORM_VERSION must be 'V1' or 'V2', got '$AGENTCORE_PLATFORM_VERSION'"
+  fi
+  # --platform-version needs AWS CLI >= 2.37.9
+  aws bedrock-agentcore-control update-agent-runtime help 2>/dev/null | grep -q -- '--platform-version' \
+    || fail "AWS CLI $(aws --version 2>&1 | awk '{print $1}') lacks --platform-version for AgentCore; upgrade to aws-cli >= 2.37.9"
+fi
+
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 case "$REGION" in cn-*) PARTITION="aws-cn" ;; us-gov-*) PARTITION="aws-us-gov" ;; *) PARTITION="aws" ;; esac
 log "  AWS Account: ${ACCOUNT_ID}"
 log "  Region:      ${REGION}"
 log "  Stage:       ${STAGE}"
 log "  Deploy mode: $DEPLOY_MODE"
+[ "$DEPLOY_MODE" = "agentcore" ] && log "  AgentCore platform: ${AGENTCORE_PLATFORM_VERSION}"
 log "  Admin email: ${ADMIN_EMAIL}"
 
 # ── Step 2: Install & build ─────────────────────────────────────────────────
@@ -273,6 +294,7 @@ if [ -n "$EXISTING_RUNTIME_ARN" ]; then
     --role-arn "$AGENT_BASE_ROLE_ARN" \
     --network-configuration '{"networkMode":"PUBLIC"}' \
     --environment-variables "$ENV_VARS_JSON" \
+    --platform-version "$AGENTCORE_PLATFORM_VERSION" \
     --region "$REGION" 2>&1) || fail "Failed to update AgentCore runtime: $UPDATE_RESULT"
 
   NEW_VERSION=$(echo "$UPDATE_RESULT" | jq -r '.agentRuntimeVersion // "unknown"')
@@ -286,6 +308,7 @@ else
     --role-arn "$AGENT_BASE_ROLE_ARN" \
     --network-configuration '{"networkMode":"PUBLIC"}' \
     --environment-variables "$ENV_VARS_JSON" \
+    --platform-version "$AGENTCORE_PLATFORM_VERSION" \
     --region "$REGION" 2>&1)
 
   AGENTCORE_RUNTIME_ARN=$(echo "$CREATE_RESULT" | jq -r '.agentRuntimeArn // empty')
@@ -300,6 +323,8 @@ fi
 log "Step 9: Waiting for AgentCore runtime to be READY"
 AGENTCORE_ID=$(echo "$AGENTCORE_RUNTIME_ARN" | awk -F'/' '{print $NF}')
 
+# V2 create/update prepares + snapshots the environment, which takes several
+# minutes (V1 is seconds), so the 10-minute budget below covers both.
 for i in $(seq 1 60); do
   STATUS=$(aws bedrock-agentcore-control get-agent-runtime \
     --agent-runtime-id "$AGENTCORE_ID" \
@@ -309,9 +334,15 @@ for i in $(seq 1 60); do
     log "  AgentCore runtime is READY"
     break
   fi
-  if [ "$STATUS" = "FAILED" ]; then
-    fail "AgentCore runtime entered FAILED state"
-  fi
+  case "$STATUS" in
+    *FAILED)
+      # e.g. V2 snapshot health check (/ping not healthy within 120s)
+      REASON=$(aws bedrock-agentcore-control get-agent-runtime \
+        --agent-runtime-id "$AGENTCORE_ID" --region "$REGION" \
+        --query 'failureReason' --output text 2>/dev/null || echo "unknown")
+      fail "AgentCore runtime entered ${STATUS} state: ${REASON}"
+      ;;
+  esac
   log "  Status: ${STATUS} (attempt ${i}/60, waiting 10s...)"
   sleep 10
 done

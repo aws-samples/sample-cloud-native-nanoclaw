@@ -147,6 +147,7 @@ DEPLOY_MODE=ecs bash scripts/deploy.sh
 CDK_STAGE=dev              # deployment stage (default: dev)
 AWS_REGION=us-west-2       # AWS region
 DEPLOY_MODE=agentcore      # deployment mode: agentcore (default) or ecs
+AGENTCORE_PLATFORM_VERSION=V2  # AgentCore Runtime platform: V2 (default in us-east-1/us-east-2/us-west-2/eu-west-1/ap-northeast-1, else V1); needs aws-cli >= 2.37.9
 ```
 
 **What `deploy.sh` does (17 steps):**
@@ -157,8 +158,8 @@ DEPLOY_MODE=agentcore      # deployment mode: agentcore (default) or ecs
 5. Build & push agent-runtime ARM64 Docker image → ECR (`nanoclawbot-agent`)
 6. `cdk deploy --all` (6 stacks)
 7. Read CDK outputs (Cognito, ALB, CloudFront domain, S3 bucket, agent role)
-8. Register/update AgentCore runtime with new container image
-9. Wait for AgentCore READY (up to 10 min)
+8. Register/update AgentCore runtime with new container image (`--platform-version`, V2 = snapshot-restored microVMs; not settable via CFN/CDK)
+9. Wait for AgentCore READY (up to 10 min; V2 snapshot prep takes several minutes, `/ping` must be healthy within 120s)
 10. Stop warm AgentCore sessions (force new image pickup)
 11. Register new ECS task definition with AGENTCORE_RUNTIME_ARN
 12. Force ECS rolling deployment
