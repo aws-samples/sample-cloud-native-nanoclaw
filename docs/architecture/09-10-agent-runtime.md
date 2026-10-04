@@ -114,6 +114,18 @@ clawbot-agent 容器 (ARM64, node:22-slim)
     └── extra/              # 额外挂载目录 (可选, 插件用)
 ```
 
+**MCP 启动恢复：** 每次调用先创建 SDK 会话，暂缓提交用户或定时任务的 prompt，
+通过 `mcpServerStatus()` 等待连接完成。连接失败的服务器在同一会话内通过
+`reconnectMcpServer()` 最多重试两次，重试前分别等待 1 秒、2 秒。`MCP_TIMEOUT`
+默认设为 `120000` 毫秒，可通过 Agent Runtime 环境变量覆盖；该变量控制 MCP
+连接超时，工具执行超时仍由 SDK 的 `MCP_TOOL_TIMEOUT` 控制。
+
+`nanoclawbot` 必须连接成功才能开始任务，重试耗尽后返回明确错误，避免任务在
+缺少 `send_message`、`schedule_task`、`send_file` 等工具时继续执行。
+可选 MCP 服务器仍不可用时记录警告并继续，`needs-auth` 和 `disabled` 状态不自动重试。
+恢复只发生在提交 prompt 之前，不重新执行 agent turn，以免重复发消息或创建定时任务；
+调用结束或恢复失败时关闭 SDK 会话。
+
 ### 9.3 Dockerfile
 
 多阶段构建，从仓库根目录执行 (`docker build -f agent-runtime/Dockerfile .`)，

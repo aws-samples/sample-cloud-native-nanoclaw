@@ -23,7 +23,6 @@ import fs from 'fs';
 import { writeFile, mkdir } from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import type { S3Client } from '@aws-sdk/client-s3';
 import {
@@ -44,6 +43,7 @@ import { startCredentialProxy, type CredentialProxy } from './credential-proxy.j
 import { createToolWhitelistHook } from './tool-whitelist.js';
 import { sendIntermediateMessage } from './mcp-tools.js';
 import { createTurnTracer } from './tracing.js';
+import { queryWithMcpRecovery } from './mcp-recovery.js';
 
 const SESSION_BUCKET = process.env.SESSION_BUCKET || '';
 const DEFAULT_MODEL = 'global.anthropic.claude-sonnet-4-6';
@@ -463,7 +463,7 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
     // Input that drove the current turn: the user prompt first, then tool results.
     let pendingInput: string = prompt;
 
-    for await (const message of query({
+    for await (const message of queryWithMcpRecovery({
       prompt,
       options: {
         model: payload.model || DEFAULT_MODEL,
@@ -546,7 +546,7 @@ async function runAgentQuery(params: QueryParams): Promise<InvocationResult> {
           }),
         },
       },
-    })) {
+    }, logger)) {
       messageCount++;
 
       switch (message.type) {
